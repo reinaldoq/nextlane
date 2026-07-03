@@ -13,6 +13,7 @@ import {
   theme,
 } from 'antd'
 import type { TableColumnsType, TableProps } from 'antd'
+import DeleteVehicleButton from '../components/DeleteVehicleButton'
 import StatCards from '../components/StatCards'
 import StatusActions from '../components/StatusActions'
 import VehicleFormDrawer from '../components/VehicleFormDrawer'
@@ -220,7 +221,7 @@ function InventoryPage() {
         title: 'Actions',
         key: 'actions',
         fixed: 'right',
-        width: 260,
+        width: 330,
         render: (_value: unknown, vehicle: Vehicle) => (
           <Flex align="center" gap={8}>
             <Button
@@ -232,6 +233,7 @@ function InventoryPage() {
               Edit
             </Button>
             <StatusActions vehicle={vehicle} refresh={refresh} />
+            <DeleteVehicleButton vehicle={vehicle} refresh={refresh} />
           </Flex>
         ),
       },

@@ -34,7 +34,7 @@ function ReportIssueModal() {
         message: values.message,
         context: { page: location.pathname },
       })
-      toast.success('Thanks -- your report was sent.')
+      toast.success('Thanks — your report was sent.')
       closeModal()
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Failed to send report.')

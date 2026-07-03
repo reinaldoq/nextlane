@@ -114,6 +114,8 @@ function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawe
       onClose={onClose}
       width={420}
       destroyOnHidden
+      maskClosable={!submitting}
+      keyboard={!submitting}
       footer={
         <Flex justify="end" gap={8}>
           <Button onClick={onClose} disabled={submitting}>
@@ -163,7 +165,7 @@ function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawe
           name="year"
           rules={[{ required: true, message: 'Year is required' }]}
         >
-          <InputNumber min={1950} max={2100} style={{ width: '100%' }} />
+          <InputNumber min={1950} max={2100} precision={0} style={{ width: '100%' }} />
         </Form.Item>
 
         <Form.Item
@@ -179,7 +181,7 @@ function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawe
           name="mileage_km"
           rules={[{ required: true, message: 'Mileage is required' }]}
         >
-          <InputNumber min={0} style={{ width: '100%' }} />
+          <InputNumber min={0} precision={0} style={{ width: '100%' }} />
         </Form.Item>
 
         {!isEdit && (
@@ -187,6 +189,10 @@ function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawe
             <Select options={STATUS_OPTIONS} />
           </Form.Item>
         )}
+
+        {/* Hidden submit button: makes Enter submit the form (the visible Save
+            button lives in the Drawer footer, outside the <form> element). */}
+        <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
       </Form>
     </Drawer>
   )

@@ -20,6 +20,13 @@ const ACTION_LABEL: Record<Status, string> = {
   sold: 'Mark sold',
 }
 
+// Success toast per *target* status of the completed transition.
+const SUCCESS_MESSAGE: Record<Status, string> = {
+  available: 'Reservation cancelled.',
+  reserved: 'Vehicle reserved.',
+  sold: 'Vehicle marked as sold.',
+}
+
 interface StatusActionsProps {
   vehicle: Vehicle
   /** Called after a successful transition so the caller can reload the table + stats. */
@@ -41,7 +48,7 @@ function StatusActions({ vehicle, refresh }: StatusActionsProps) {
     setPending(next)
     try {
       await api.post<Vehicle>(`/api/vehicles/${vehicle.id}/status`, { status: next })
-      message.success(`Vehicle marked as ${next}.`)
+      message.success(SUCCESS_MESSAGE[next])
       refresh()
     } catch (err) {
       message.error(err instanceof ApiError ? err.message : 'Failed to update status.')
