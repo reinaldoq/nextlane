@@ -24,7 +24,8 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     // Fire-and-forget: the 16KB serialized `context` cap lives server-side
-    // (see api/_lib/events.py), the 8000-char slice here keeps us safely under it.
+    // (see api/_lib/events.py) -- message is sliced to 4000 chars and stack
+    // to 8000 chars here, keeping us safely under that cap.
     void api
       .post('/api/events', {
         kind: 'client_error',

@@ -5,10 +5,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from psycopg.types.json import Jsonb
 
+from .auth import current_user
 from .db import pool
 from .ratelimit import rate_limited
 
-router = APIRouter()
+# Router-level auth is the canonical pattern for every business router; rate limiting is additive on writes.
+router = APIRouter(dependencies=[Depends(current_user)])
 
 Kind = Literal["bug_report", "client_error"]
 
