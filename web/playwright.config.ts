@@ -12,10 +12,11 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? [['list']] : [['list'], ['html', { open: 'never' }]],
+  reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL: `http://127.0.0.1:${WEB_PORT}`,
     trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
   },
   projects: [
     {
@@ -34,6 +35,9 @@ export default defineConfig({
           process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres',
       },
       url: `http://127.0.0.1:${API_PORT}/api/health`,
+      // Cold CI runners pay `uv sync` (dependency resolution + install)
+      // inside `uv run uvicorn`; the 60s default may not cover it.
+      timeout: 120_000,
       reuseExistingServer: false,
     },
     {

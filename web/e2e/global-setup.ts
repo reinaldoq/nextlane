@@ -34,7 +34,16 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     res.end(body)
   })
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', (err) => {
+      reject(
+        new Error(
+          `e2e JWKS server could not bind 127.0.0.1:${JWKS_PORT} -- is a stale process ` +
+            `holding the port? (JWKS_PORT lives in e2e/constants.ts)`,
+          { cause: err },
+        ),
+      )
+    })
     server.listen(JWKS_PORT, '127.0.0.1', resolve)
   })
 

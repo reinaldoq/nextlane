@@ -9,6 +9,11 @@ Nextlane DMS web frontend — Vite + React + TypeScript + Ant Design.
 - `npm run typecheck` — `tsc -b --noEmit`
 - `npm run lint` — oxlint (type-aware)
 - `npm run preview` — serve the production build locally
+- `npm run e2e` — Playwright smoke test (real API + Postgres; see `e2e/`)
+
+Stop local dev servers (ports 8000/5173) before running `npm run e2e` — the
+e2e config refuses to reuse running servers so it always tests the production
+build.
 
 ## Environment
 
