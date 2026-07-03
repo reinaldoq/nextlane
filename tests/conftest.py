@@ -44,6 +44,18 @@ def jwks_server(ec_key):
     srv.shutdown()
 
 
+@pytest.fixture(autouse=True)
+def _reset_ratelimit():
+    """Autouse so no test's rate-limit bucket bleeds into the next one,
+    regardless of module or execution order. Imported lazily so modules
+    that don't touch the API are unaffected if this import ever breaks.
+    """
+    from api._lib import ratelimit
+
+    ratelimit.reset()
+    yield
+
+
 @pytest.fixture()
 def clean_tables():
     """NOT autouse here — DB-dependent. Integration modules opt in so

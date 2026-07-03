@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.utils import is_body_allowed_for_status_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ._lib.events import router as events_router
 from ._lib.vehicles import router as vehicles_router
 
 
@@ -47,6 +48,7 @@ def register_error_handlers(application: FastAPI) -> FastAPI:
 
 app = register_error_handlers(FastAPI(title="Nextlane DMS API", docs_url=None, redoc_url=None))
 app.include_router(vehicles_router, prefix="/api")
+app.include_router(events_router, prefix="/api")
 
 
 @app.get("/api/health")
