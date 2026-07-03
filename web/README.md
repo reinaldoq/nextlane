@@ -1,5 +1,7 @@
 # web
 
+[![CI](https://github.com/reinaldoq/nextlane/actions/workflows/ci.yml/badge.svg)](https://github.com/reinaldoq/nextlane/actions/workflows/ci.yml)
+
 Nextlane DMS web frontend — Vite + React + TypeScript + Ant Design.
 
 ## Commands

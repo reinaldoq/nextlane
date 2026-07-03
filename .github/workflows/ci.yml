@@ -33,7 +33,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Install web deps
-        run: npm --prefix web ci
+        run: npx --yes npm@10 ci --prefix web
 
       - name: web lint
         run: npm --prefix web run lint
@@ -109,7 +109,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Install web deps
-        run: npm --prefix web ci
+        run: npx --yes npm@10 ci --prefix web
 
       - name: Apply migrations
         run: bash scripts/apply_migrations.sh
@@ -155,7 +155,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Install web deps
-        run: npm --prefix web ci
+        run: npx --yes npm@10 ci --prefix web
 
       - name: npm audit
         run: npm --prefix web audit --audit-level=high
