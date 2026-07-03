@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "typecheck": "tsc -b --noEmit",
     "preview": "vite preview",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:prod": "playwright test e2e/prod-smoke.spec.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.0",
