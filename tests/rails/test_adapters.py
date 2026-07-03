@@ -13,19 +13,28 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
 import rails.adapters.base as base_mod
+from rails.adapters import get_adapter
 from rails.adapters.base import ParsedTranscript, SessionError, SessionResult
 from rails.adapters.claude import ClaudeAdapter, parse_claude_transcript
+from rails.adapters.codex import CodexAdapter, parse_codex_transcript
+from rails.adapters.gemini import GeminiAdapter, parse_gemini_transcript
 from rails.config import RailsConfig
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FIXTURE_SUCCESS = FIXTURES / "claude-transcript.txt"
 FIXTURE_BUDGET_EXCEEDED = FIXTURES / "claude-transcript-budget-exceeded.txt"
+FIXTURE_CODEX_SUCCESS = FIXTURES / "codex-transcript.txt"
+FIXTURE_CODEX_ERROR = FIXTURES / "codex-transcript-error.txt"
+FIXTURE_CODEX_OUT_FILE = FIXTURES / "codex-out-file.txt"
+FIXTURE_GEMINI_SUCCESS = FIXTURES / "gemini-transcript.txt"
+FIXTURE_GEMINI_ERROR = FIXTURES / "gemini-transcript-error.txt"
 
 ARGV_CWD = Path("/work/tree")
 ARGV_OUT = Path("/work/tree/.rails-transcripts/run.out")
@@ -339,7 +348,330 @@ def test_parse_claude_transcript_no_result_event():
     assert parsed.saw_result is False
 
 
-# --- gated real-engine test --------------------------------------------------
+# --- codex adapter: build_argv (pure) ---------------------------------------
+
+
+def test_codex_build_argv_exact():
+    cfg = make_config()
+    adapter = CodexAdapter(cfg, binary=["codex"])
+
+    argv = adapter.build_argv("do the thing", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv == [
+        "codex",
+        "exec",
+        "-s",
+        "workspace-write",
+        "--json",
+        "--ignore-user-config",
+        "-C",
+        str(ARGV_CWD),
+        "-o",
+        str(ARGV_OUT),
+        "do the thing",
+    ]
+    # prompt is the trailing POSITIONAL arg -- codex's -p means --profile,
+    # NOT "prompt". Using -p here would silently misroute the prompt text
+    # into a config-profile lookup instead of driving the session.
+    assert "-p" not in argv
+    assert argv[-1] == "do the thing"  # positional, not attached to any flag
+
+
+def test_codex_build_argv_wires_cwd_and_out_file():
+    adapter = CodexAdapter(make_config(), binary=["codex"])
+    other_cwd = Path("/elsewhere")
+    other_out = Path("/elsewhere/.rails-transcripts/run.out")
+
+    argv = adapter.build_argv("hi", cwd=other_cwd, out_file=other_out)
+
+    assert argv[argv.index("-C") + 1] == str(other_cwd)
+    assert argv[argv.index("-o") + 1] == str(other_out)
+
+
+def test_codex_build_argv_is_pure_given_same_inputs():
+    adapter = CodexAdapter(make_config(), binary=["codex"])
+
+    first = adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)
+    second = adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert first == second  # no instance-state mutation
+
+
+def test_codex_build_argv_uses_custom_binary_override():
+    adapter = CodexAdapter(make_config(), binary=["uv", "run", "codex"])
+
+    argv = adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv[:3] == ["uv", "run", "codex"]
+    assert argv[3] == "exec"
+
+
+def test_codex_default_binary_is_bare_codex():
+    adapter = CodexAdapter(make_config())
+
+    assert adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)[0] == "codex"
+
+
+# --- codex adapter: run() (fake-engine-driven) -------------------------------
+
+
+def test_codex_run_ok_reads_out_file_for_final_message(fake_binary, tmp_cwd):
+    argv, extra_env = fake_binary(shape="codex", behavior="ok")
+    adapter = CodexAdapter(make_config(), binary=argv)
+
+    result = adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
+
+    assert result.engine == "codex"
+    assert result.ok is True
+    assert result.explicit_result is True  # turn.completed was seen
+    assert result.raw_exit_code == 0
+    assert result.final_message == "fake engine final message"
+    # codex reports token counts, not USD -- cost_usd is tolerated as None.
+    assert result.cost_usd is None
+    assert result.transcript_path.is_file()
+
+
+def test_codex_run_fail_sets_ok_false_and_no_out_file(fake_binary, tmp_cwd):
+    """Real codex only writes the -o file on a successful turn (verified by
+    a real capture with a bogus model: no out.txt at all on failure) -- the
+    fake engine mirrors that, so a failed run must fall back to the
+    in-stream agent_message (there's none here, so final_message is empty)
+    rather than crash trying to read a file that was never created."""
+    argv, extra_env = fake_binary(shape="codex", behavior="fail")
+    adapter = CodexAdapter(make_config(), binary=argv)
+
+    result = adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
+
+    assert result.ok is False
+    assert result.raw_exit_code != 0
+    assert result.explicit_result is True  # turn.failed is still a terminal event
+
+
+# --- codex adapter: parser, built against REAL captured fixtures ------------
+
+
+def test_parse_codex_transcript_success_fixture():
+    """Parses tests/rails/fixtures/codex-transcript.txt, captured with
+    `codex exec -s workspace-write --json --ignore-user-config -C <dir> -o
+    <dir>/out.txt "Reply with exactly the word: pong"` (codex-cli 0.141.0).
+    The stream carries thread.started / turn.started / item.completed
+    (agent_message) / turn.completed (usage, no cost). The real -o file held
+    exactly "pong" (no trailing newline) -- that's the reliable source,
+    verified to win over the in-stream agent_message text.
+    """
+    parsed = parse_codex_transcript(
+        FIXTURE_CODEX_SUCCESS.read_text().splitlines(),
+        cwd=FIXTURES,
+        out_file=FIXTURE_CODEX_OUT_FILE,
+    )
+
+    assert isinstance(parsed, ParsedTranscript)
+    assert parsed.final_message == "pong"
+    assert parsed.cost_usd is None
+    assert parsed.result_ok is True
+    assert parsed.saw_result is True
+
+
+def test_parse_codex_transcript_missing_out_file_falls_back_to_stream():
+    """When the -o file doesn't exist (real codex skips writing it on
+    failure), fall back to the last agent_message text seen in-stream."""
+    parsed = parse_codex_transcript(
+        FIXTURE_CODEX_SUCCESS.read_text().splitlines(),
+        cwd=FIXTURES,
+        out_file=FIXTURES / "does-not-exist.out",
+    )
+
+    assert parsed.final_message == "pong"  # from the item.completed agent_message
+
+
+def test_parse_codex_transcript_error_fixture():
+    """Parses tests/rails/fixtures/codex-transcript-error.txt, captured with
+    a bogus -m model value: thread.started, an item.completed error item, a
+    mid-stream top-level `error` event, then the terminal `turn.failed`
+    event carrying the real error payload. No -o file was written at all on
+    this run (verified separately) -- result_ok comes from turn.failed.
+    """
+    parsed = parse_codex_transcript(
+        FIXTURE_CODEX_ERROR.read_text().splitlines(),
+        cwd=FIXTURES,
+        out_file=FIXTURES / "does-not-exist.out",
+    )
+
+    assert parsed.result_ok is False
+    assert parsed.saw_result is True
+
+
+def test_parse_codex_transcript_no_terminal_event():
+    lines = [
+        json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "partial"}})
+    ]
+
+    parsed = parse_codex_transcript(lines, cwd=FIXTURES, out_file=FIXTURES / "does-not-exist.out")
+
+    assert parsed.final_message == "partial"
+    assert parsed.result_ok is True  # no terminal event seen -- exit code alone decides
+    assert parsed.saw_result is False
+
+
+# --- gemini adapter: build_argv (pure) ---------------------------------------
+
+
+def test_gemini_build_argv_exact():
+    adapter = GeminiAdapter(make_config(), binary=["gemini"])
+
+    argv = adapter.build_argv("do the thing", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv == [
+        "gemini",
+        "-p",
+        "do the thing",
+        "--approval-mode",
+        "auto_edit",
+        "-o",
+        "stream-json",
+    ]
+    # gemini's -o is the OUTPUT FORMAT selector, not a file path -- out_file
+    # must never leak into gemini's argv.
+    assert str(ARGV_OUT) not in argv
+
+
+def test_gemini_build_argv_ignores_cwd_and_out_file():
+    adapter = GeminiAdapter(make_config(), binary=["gemini"])
+
+    first = adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)
+    second = adapter.build_argv("hi", cwd=Path("/elsewhere"), out_file=Path("/elsewhere/o.out"))
+
+    assert first == second
+
+
+def test_gemini_build_argv_uses_custom_binary_override():
+    adapter = GeminiAdapter(make_config(), binary=["uv", "run", "gemini"])
+
+    argv = adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv[:3] == ["uv", "run", "gemini"]
+    assert argv[3] == "-p"
+
+
+def test_gemini_default_binary_is_bare_gemini():
+    adapter = GeminiAdapter(make_config())
+
+    assert adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)[0] == "gemini"
+
+
+# --- gemini adapter: run() (fake-engine-driven) -------------------------------
+
+
+def test_gemini_run_ok_extracts_best_effort_final_message(fake_binary, tmp_cwd):
+    argv, extra_env = fake_binary(shape="gemini", behavior="ok")
+    adapter = GeminiAdapter(make_config(), binary=argv)
+
+    result = adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
+
+    assert result.engine == "gemini"
+    assert result.ok is True
+    assert result.final_message == "fake engine final message"
+    assert result.cost_usd is None
+
+
+def test_gemini_explicit_result_always_true_even_on_failure(fake_binary, tmp_cwd):
+    """gemini has no reliable terminal-result event (emits_terminal_result =
+    False), so explicit_result is pinned True regardless of ok, per the base
+    seam's "engines with no terminal-result concept never false-flag"
+    contract -- proven here for BOTH the ok and the fail path."""
+    ok_argv, ok_env = fake_binary(shape="gemini", behavior="ok")
+    ok_adapter = GeminiAdapter(make_config(), binary=ok_argv)
+    ok_result = ok_adapter.run("hello", cwd=tmp_cwd, extra_env=ok_env)
+    assert ok_result.explicit_result is True
+
+    fail_argv, fail_env = fake_binary(shape="gemini", behavior="fail")
+    fail_adapter = GeminiAdapter(make_config(), binary=fail_argv)
+    fail_result = fail_adapter.run("hello", cwd=tmp_cwd, extra_env=fail_env)
+    assert fail_result.ok is False
+    assert fail_result.explicit_result is True
+
+
+# --- gemini adapter: parser, built against REAL captured fixtures -----------
+
+
+def test_parse_gemini_transcript_success_fixture():
+    """Parses tests/rails/fixtures/gemini-transcript.txt, captured with
+    `gemini -p "Reply with exactly the word: pong" --approval-mode auto_edit
+    -o stream-json` (gemini 0.29.5): init / message(role=user) /
+    message(role=assistant, content="pong") / a terminal `result` event.
+    The parser deliberately ignores the `result` event's content (best
+    effort only, see GeminiAdapter.emits_terminal_result) and reads the
+    assistant message text instead.
+    """
+    parsed = parse_gemini_transcript(FIXTURE_GEMINI_SUCCESS.read_text().splitlines())
+
+    assert isinstance(parsed, ParsedTranscript)
+    assert parsed.final_message == "pong"
+    assert parsed.cost_usd is None
+    assert parsed.saw_result is False  # never trusted as authoritative, see module docstring
+
+
+def test_parse_gemini_transcript_error_fixture_does_not_raise():
+    """Parses tests/rails/fixtures/gemini-transcript-error.txt (a real
+    capture with a bogus -m model value): init / message(user) / a terminal
+    `result` event with status "error" and no assistant text at all. No
+    assistant message means final_message falls back to the last non-empty
+    raw stdout line -- degrade gracefully, never raise."""
+    parsed = parse_gemini_transcript(FIXTURE_GEMINI_ERROR.read_text().splitlines())
+
+    assert parsed.saw_result is False
+    assert parsed.result_ok is True  # never downgraded by parsing -- exit code alone decides
+    assert parsed.final_message != ""  # fell back to the raw result line, didn't crash/blank out
+
+
+def test_parse_gemini_transcript_tolerates_garbage_never_raises():
+    lines = ["not json at all", "", "   ", "{broken json", "last non-empty line"]
+
+    parsed = parse_gemini_transcript(lines)
+
+    assert parsed.final_message == "last non-empty line"
+    assert parsed.cost_usd is None
+    assert parsed.result_ok is True
+    assert parsed.saw_result is False
+
+
+def test_parse_gemini_transcript_empty_input_never_raises():
+    parsed = parse_gemini_transcript([])
+
+    assert parsed.final_message == ""
+    assert parsed.result_ok is True
+    assert parsed.saw_result is False
+
+
+# --- registry ------------------------------------------------------------
+
+
+def test_get_adapter_returns_claude_adapter():
+    adapter = get_adapter("claude", make_config())
+    assert isinstance(adapter, ClaudeAdapter)
+
+
+def test_get_adapter_returns_codex_adapter():
+    adapter = get_adapter("codex", make_config())
+    assert isinstance(adapter, CodexAdapter)
+
+
+def test_get_adapter_returns_gemini_adapter():
+    adapter = get_adapter("gemini", make_config())
+    assert isinstance(adapter, GeminiAdapter)
+
+
+def test_get_adapter_unknown_engine_raises_value_error():
+    with pytest.raises(ValueError, match="unknown engine"):
+        get_adapter("chatgpt", make_config())
+
+
+def test_get_adapter_passes_binary_override_through():
+    adapter = get_adapter("codex", make_config(), binary=["uv", "run", "codex"])
+    assert adapter.binary == ["uv", "run", "codex"]
+
+
+# --- gated real-engine tests --------------------------------------------------
 
 
 @pytest.mark.skipif(
@@ -348,6 +680,35 @@ def test_parse_claude_transcript_no_result_event():
 )
 def test_real_claude_engine_says_pong(tmp_path):
     adapter = ClaudeAdapter(make_config(max_budget_usd=0.05))
+
+    result = adapter.run("Reply with exactly the word: pong", cwd=tmp_path, timeout_s=60)
+
+    assert "pong" in result.final_message.lower()
+
+
+@pytest.mark.skipif(
+    os.environ.get("RAILS_REAL_ENGINE") != "1",
+    reason="real engine run (spends real subscription budget) -- set RAILS_REAL_ENGINE=1 to run",
+)
+def test_real_codex_engine_says_pong(tmp_path):
+    # codex requires a trusted git repo (or --skip-git-repo-check) to run
+    # non-interactively -- tmp_path is not a repo, so make it one.
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "init"], cwd=tmp_path, check=True)
+
+    adapter = CodexAdapter(make_config())
+
+    result = adapter.run("Reply with exactly the word: pong", cwd=tmp_path, timeout_s=60)
+
+    assert "pong" in result.final_message.lower()
+
+
+@pytest.mark.skipif(
+    os.environ.get("RAILS_REAL_ENGINE") != "1",
+    reason="real engine run (spends real subscription budget) -- set RAILS_REAL_ENGINE=1 to run",
+)
+def test_real_gemini_engine_says_pong(tmp_path):
+    adapter = GeminiAdapter(make_config())
 
     result = adapter.run("Reply with exactly the word: pong", cwd=tmp_path, timeout_s=60)
 

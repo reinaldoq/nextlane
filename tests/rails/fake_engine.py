@@ -11,7 +11,11 @@ therefore be a fully standalone script with no package-relative imports.
 Behavior is controlled entirely by env vars so adapters under test never
 need special-case argv handling — arbitrary argv is accepted and ignored,
 letting real CLI argv shapes (e.g. the claude adapter's `-p <prompt>
---verbose ...`) pass straight through without this stub parsing them.
+--verbose ...`) pass straight through without this stub parsing them. The
+ONE exception: FAKE_SHAPE=codex on a successful run looks for `-o <path>`
+in argv and writes FINAL_TEXT there, because real codex's reliable final
+message lives in that sidecar file, not on stdout (see rails/adapters/codex.py)
+-- a stub that never wrote it could never exercise that seam.
 
 FAKE_BEHAVIOR:
   ok              -- emit a normal transcript for FAKE_SHAPE, exit 0
@@ -36,8 +40,9 @@ FAKE_BEHAVIOR:
 
 FAKE_SHAPE = claude | codex | gemini -- which engine's real output shape to
   emit. Field names are lifted from one manually captured real run per
-  engine (see tests/rails/fixtures/); claude's shape is exercised by real
-  adapter parsing today, codex/gemini are placeholders for Task 3.
+  engine (see tests/rails/fixtures/): claude-transcript*.txt,
+  codex-transcript*.txt (codex-cli 0.141.0), gemini-transcript*.txt (gemini
+  0.29.5).
 """
 
 from __future__ import annotations
@@ -109,23 +114,71 @@ def _emit_claude_bad_utf8() -> None:
     print(json.dumps(events[-1]), flush=True)
 
 
+def _write_codex_out_file() -> None:
+    """Mirror real codex: on a successful turn it writes the `-o <path>`
+    sidecar file with the final message (no trailing newline). Real codex
+    was verified to NOT write this file at all on a failed turn, so this is
+    only ever called from the ok path."""
+    argv = sys.argv
+    for i, arg in enumerate(argv):
+        if arg == "-o" and i + 1 < len(argv):
+            Path(argv[i + 1]).write_text(FINAL_TEXT)
+            return
+
+
 def _emit_codex(ok: bool) -> None:
-    # Placeholder shape for Task 3 -- codex adapter/parser not built yet.
+    # Shape mirrors tests/rails/fixtures/codex-transcript.txt /
+    # codex-transcript-error.txt (real capture, codex-cli 0.141.0):
+    # thread.started + turn.started + item.completed (agent_message), then
+    # the terminal event -- turn.completed (usage, no dollar cost) on
+    # success, turn.failed (error) on failure.
     events = [
-        {"type": "task_started"},
-        {"type": "agent_message", "message": FINAL_TEXT},
-        {"type": "task_complete", "is_error": not ok},
+        {"type": "thread.started", "thread_id": "fake-thread"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {"id": "item_0", "type": "agent_message", "text": FINAL_TEXT},
+        },
     ]
+    if ok:
+        events.append(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 10,
+                    "output_tokens": 5,
+                    "reasoning_output_tokens": 0,
+                },
+            }
+        )
+    else:
+        events.append({"type": "turn.failed", "error": {"message": "fake codex failure"}})
     for event in events:
         print(json.dumps(event), flush=True)
+    if ok:
+        _write_codex_out_file()
 
 
 def _emit_gemini(ok: bool) -> None:
-    # Placeholder shape for Task 3 -- gemini adapter/parser not built yet.
+    # Shape mirrors tests/rails/fixtures/gemini-transcript.txt /
+    # gemini-transcript-error.txt (real capture, gemini 0.29.5): init +
+    # message(role=user) + message(role=assistant) [success only] + a
+    # terminal `result` event (present in both captures, but never trusted
+    # as authoritative -- see rails/adapters/gemini.py module docstring).
     events = [
-        {"type": "content", "text": "thinking..."},
-        {"type": "content", "text": FINAL_TEXT},
+        {"type": "init", "session_id": "fake-session", "model": "fake-model"},
+        {"type": "message", "role": "user", "content": "prompt"},
     ]
+    if ok:
+        events.append(
+            {"type": "message", "role": "assistant", "content": FINAL_TEXT, "delta": True}
+        )
+        events.append({"type": "result", "status": "success", "stats": {"total_tokens": 10}})
+    else:
+        events.append(
+            {"type": "result", "status": "error", "error": {"message": "fake gemini failure"}}
+        )
     for event in events:
         print(json.dumps(event), flush=True)
     if not ok:

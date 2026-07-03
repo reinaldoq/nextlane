@@ -5,18 +5,18 @@ right `AgentSession` implementation for a given engine name.
 from __future__ import annotations
 
 from rails.adapters.claude import ClaudeAdapter
+from rails.adapters.codex import CodexAdapter
+from rails.adapters.gemini import GeminiAdapter
 from rails.config import RailsConfig
 
 _ADAPTERS = {
     "claude": ClaudeAdapter,
+    "codex": CodexAdapter,
+    "gemini": GeminiAdapter,
 }
-
-_NOT_YET_IMPLEMENTED = ("codex", "gemini")
 
 
 def get_adapter(engine: str, cfg: RailsConfig, binary: list[str] | None = None):
-    if engine in _NOT_YET_IMPLEMENTED:
-        raise NotImplementedError(f"{engine} adapter arrives in Task 3")
     try:
         adapter_cls = _ADAPTERS[engine]
     except KeyError as exc:

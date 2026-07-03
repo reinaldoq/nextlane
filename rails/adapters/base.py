@@ -204,7 +204,10 @@ class _SubprocessAdapter:
             except Exception as exc:  # surfaced after wait -- never swallowed
                 pump_errors.append(exc)
 
-        with open(transcript_path, "w") as transcript_f, open(stderr_path, "w") as stderr_f:
+        with (
+            open(transcript_path, "w", encoding="utf-8") as transcript_f,
+            open(stderr_path, "w", encoding="utf-8") as stderr_f,
+        ):
             # Each thread owns exactly one file, so no cross-thread locking
             # is needed. daemon=True: a pump wedged on a never-closing pipe
             # must not block interpreter exit.
