@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
-import { Button, Flex, Layout, Spin, Typography } from 'antd'
+import { Button, Flex, Layout, Spin, Typography, theme } from 'antd'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
@@ -20,16 +20,22 @@ function useSessionState(): SessionState {
   useEffect(() => {
     let active = true
 
+    // Only resolves the initial "loading" state: if onAuthStateChange has
+    // already delivered a session (e.g. INITIAL_SESSION), keep that result.
     supabase.auth
       .getSession()
       .then(({ data }) => {
         if (!active) return
-        setState(
-          data.session ? { status: 'authenticated', session: data.session } : { status: 'anonymous' },
-        )
+        setState((prev) => {
+          if (prev.status !== 'loading') return prev
+          return data.session
+            ? { status: 'authenticated', session: data.session }
+            : { status: 'anonymous' }
+        })
       })
       .catch(() => {
-        if (active) setState({ status: 'anonymous' })
+        if (!active) return
+        setState((prev) => (prev.status === 'loading' ? { status: 'anonymous' } : prev))
       })
 
     const {
@@ -48,26 +54,37 @@ function useSessionState(): SessionState {
   return state
 }
 
+function CenteredSpin() {
+  return (
+    <Flex justify="center" align="center" style={{ minHeight: '100vh' }}>
+      <Spin size="large" aria-label="Checking your session" />
+    </Flex>
+  )
+}
+
 /** Guards nested routes behind an authenticated Supabase session. */
 function AuthGuard() {
   const state = useSessionState()
 
-  if (state.status === 'loading') {
-    return (
-      <Flex justify="center" align="center" style={{ minHeight: '100vh' }}>
-        <Spin size="large" />
-      </Flex>
-    )
-  }
-
-  if (state.status === 'anonymous') {
-    return <Navigate to="/login" replace />
-  }
+  if (state.status === 'loading') return <CenteredSpin />
+  if (state.status === 'anonymous') return <Navigate to="/login" replace />
 
   return <AppFrame email={state.session.user.email ?? ''} />
 }
 
+/** Public login route; already-authenticated users are sent to the app. */
+function LoginRoute() {
+  const state = useSessionState()
+
+  if (state.status === 'loading') return <CenteredSpin />
+  if (state.status === 'authenticated') return <Navigate to="/" replace />
+
+  return <LoginPage />
+}
+
 function AppFrame({ email }: { email: string }) {
+  const { token } = theme.useToken()
+
   function handleLogout() {
     void supabase.auth.signOut()
   }
@@ -76,12 +93,12 @@ function AppFrame({ email }: { email: string }) {
     <Layout style={{ minHeight: '100vh' }}>
       <Header>
         <Flex align="center" justify="space-between" style={{ height: '100%' }}>
-          <Title level={3} style={{ color: '#fff', margin: 0 }}>
+          <Title level={3} style={{ color: token.colorTextLightSolid, margin: 0 }}>
             Nextlane DMS
           </Title>
           <Flex align="center" gap={16}>
             {/* Task 12: "Report issue" trigger goes here */}
-            <Text style={{ color: 'rgba(255, 255, 255, 0.85)' }}>{email}</Text>
+            <Text style={{ color: token.colorTextLightSolid, opacity: 0.85 }}>{email}</Text>
             <Button onClick={handleLogout}>Log out</Button>
           </Flex>
         </Flex>
@@ -100,7 +117,7 @@ function InventoryPlaceholder() {
 function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<AuthGuard />}>
         <Route index element={<InventoryPlaceholder />} />
       </Route>

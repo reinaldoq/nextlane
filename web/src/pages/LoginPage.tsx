@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Alert, Button, Card, Flex, Form, Input, Typography } from 'antd'
+import { Alert, Button, Card, Flex, Form, Input, Typography, theme } from 'antd'
 import { supabase } from '../lib/supabase'
 
 const { Title, Text } = Typography
@@ -12,6 +12,7 @@ interface LoginFormValues {
 
 function LoginPage() {
   const navigate = useNavigate()
+  const { token } = theme.useToken()
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -19,26 +20,32 @@ function LoginPage() {
     setSubmitting(true)
     setError(null)
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: values.email,
-      password: values.password,
-    })
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: values.email,
+        password: values.password,
+      })
 
-    if (signInError) {
+      if (signInError) {
+        setError(signInError.message)
+        return
+      }
+
+      void navigate('/', { replace: true })
+    } finally {
       setSubmitting(false)
-      setError(signInError.message)
-      return
     }
-
-    setSubmitting(false)
-    void navigate('/', { replace: true })
   }
 
   return (
-    <Flex justify="center" align="center" style={{ minHeight: '100vh', background: '#f5f3ff' }}>
+    <Flex
+      justify="center"
+      align="center"
+      style={{ minHeight: '100vh', background: token.colorPrimaryBg }}
+    >
       <Card style={{ width: 360 }}>
         <Flex vertical align="center" gap={4} style={{ marginBottom: 24 }}>
-          <Title level={3} style={{ margin: 0, color: '#6F3AF2' }}>
+          <Title level={3} style={{ margin: 0, color: token.colorPrimary }}>
             Nextlane DMS
           </Title>
           <Text type="secondary">Sign in to continue</Text>

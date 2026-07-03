@@ -4,9 +4,14 @@ import { supabase } from './supabase'
 export class ApiError extends Error {
   code: string
   status: number
-  details?: unknown
+  details?: Record<string, unknown>
 
-  constructor(status: number, code: string, message: string, details?: unknown) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details?: Record<string, unknown>,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
@@ -15,46 +20,65 @@ export class ApiError extends Error {
   }
 }
 
-interface ErrorEnvelope {
-  code?: unknown
-  message?: unknown
-  details?: unknown
+export type QueryParams = Record<string, string | number | boolean | undefined>
+
+export interface ApiFetchOptions {
+  method?: string
+  /** Plain value; JSON.stringify-ed internally. */
+  body?: unknown
+  /** Query string parameters; `undefined` values are skipped. */
+  params?: QueryParams
 }
 
-function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
-  return typeof value === 'object' && value !== null
+function buildQuery(params?: QueryParams): string {
+  if (!params) return ''
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) search.set(key, String(value))
+  }
+  const qs = search.toString()
+  return qs ? `?${qs}` : ''
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
  * Typed fetch wrapper for the same-origin `/api` backend.
  *
  * Attaches the current Supabase session's access token as a Bearer
- * authorization header (when present) and a JSON content type (when the
- * request has a body). Non-2xx responses are parsed against the API's
- * top-level error envelope `{code, message, details}` and thrown as an
- * {@link ApiError}; malformed/non-JSON bodies fall back to a generic code.
+ * authorization header (when present) and a JSON content type (when a body
+ * is given). Non-2xx responses are parsed against the API's top-level error
+ * envelope `{code, message, details}` and thrown as an {@link ApiError};
+ * malformed/non-JSON bodies fall back to a generic code.
  */
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function apiFetch<T>(path: string, opts: ApiFetchOptions = {}): Promise<T> {
   const { data } = await supabase.auth.getSession()
   const token = data.session?.access_token
 
-  const headers = new Headers(init.headers)
+  const headers = new Headers()
   if (token) headers.set('Authorization', `Bearer ${token}`)
-  if (init.body !== undefined) headers.set('Content-Type', 'application/json')
 
-  const res = await fetch(path, { ...init, headers })
+  const init: RequestInit = { method: opts.method ?? 'GET', headers }
+  if (opts.body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+    init.body = JSON.stringify(opts.body)
+  }
+
+  const res = await fetch(`${path}${buildQuery(opts.params)}`, init)
 
   if (!res.ok) {
     let code = 'error'
-    let message = res.statusText
-    let details: unknown
+    let message = res.statusText || `HTTP ${res.status}`
+    let details: Record<string, unknown> | undefined
 
     try {
       const body: unknown = await res.json()
-      if (isErrorEnvelope(body) && typeof body.code === 'string') {
+      if (isRecord(body) && typeof body.code === 'string') {
         code = body.code
         if (typeof body.message === 'string') message = body.message
-        details = body.details
+        if (isRecord(body.details)) details = body.details
       }
     } catch {
       // Response body wasn't JSON (or was empty) — keep the fallback code/message.
@@ -68,6 +92,16 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
 
   return (await res.json()) as T
+}
+
+/** Thin verb helpers over {@link apiFetch}. */
+export const api = {
+  get: <T>(path: string, params?: QueryParams): Promise<T> => apiFetch<T>(path, { params }),
+  post: <T>(path: string, body?: unknown): Promise<T> =>
+    apiFetch<T>(path, { method: 'POST', body }),
+  patch: <T>(path: string, body: unknown): Promise<T> =>
+    apiFetch<T>(path, { method: 'PATCH', body }),
+  del: (path: string): Promise<undefined> => apiFetch<undefined>(path, { method: 'DELETE' }),
 }
 
 export interface Vehicle {
