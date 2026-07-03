@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -14,6 +14,8 @@ import {
 } from 'antd'
 import type { TableColumnsType, TableProps } from 'antd'
 import StatCards from '../components/StatCards'
+import StatusActions from '../components/StatusActions'
+import VehicleFormDrawer from '../components/VehicleFormDrawer'
 import {
   DEFAULT_PAGE_SIZE,
   DEFAULT_SORT,
@@ -82,13 +84,30 @@ function InventoryPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null)
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  // Task 12 children will receive this to reload the table + stats together.
-  const refresh = () => {
+  // Stable identity: passed down to StatusActions/VehicleFormDrawer, and used as
+  // a memoized columns dependency below.
+  const refresh = useCallback(() => {
     setRefreshKey((key) => key + 1)
-  }
+  }, [])
+
+  const openCreateDrawer = useCallback(() => {
+    setEditingVehicle(null)
+    setDrawerOpen(true)
+  }, [])
+
+  const openEditDrawer = useCallback((vehicle: Vehicle) => {
+    setEditingVehicle(vehicle)
+    setDrawerOpen(true)
+  }, [])
+
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false)
+  }, [])
 
   useEffect(
     () => () => {
@@ -197,8 +216,27 @@ function InventoryPage() {
         key: 'updated_at',
         render: (value: string) => updatedFormatter.format(new Date(value)),
       },
+      {
+        title: 'Actions',
+        key: 'actions',
+        fixed: 'right',
+        width: 260,
+        render: (_value: unknown, vehicle: Vehicle) => (
+          <Flex align="center" gap={8}>
+            <Button
+              size="small"
+              onClick={() => {
+                openEditDrawer(vehicle)
+              }}
+            >
+              Edit
+            </Button>
+            <StatusActions vehicle={vehicle} refresh={refresh} />
+          </Flex>
+        ),
+      },
     ],
-    [sort],
+    [sort, openEditDrawer, refresh],
   )
 
   return (
@@ -210,7 +248,12 @@ function InventoryPage() {
           </Title>
           <Text type="secondary">Search, filter and track every vehicle on the lot.</Text>
         </Flex>
-        <Button onClick={refresh}>Refresh</Button>
+        <Flex gap={8}>
+          <Button onClick={refresh}>Refresh</Button>
+          <Button type="primary" onClick={openCreateDrawer}>
+            New vehicle
+          </Button>
+        </Flex>
       </Flex>
 
       <StatCards refreshKey={refreshKey} />
@@ -255,6 +298,7 @@ function InventoryPage() {
             dataSource={items}
             loading={loading}
             onChange={handleTableChange}
+            scroll={{ x: 'max-content' }}
             pagination={{
               current: page,
               pageSize,
@@ -278,6 +322,13 @@ function InventoryPage() {
           />
         </Flex>
       </Card>
+
+      <VehicleFormDrawer
+        open={drawerOpen}
+        vehicle={editingVehicle}
+        onClose={closeDrawer}
+        refresh={refresh}
+      />
     </Flex>
   )
 }

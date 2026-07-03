@@ -17,7 +17,7 @@ const STAT_DEFS: StatDef[] = [
   { status: 'sold', label: 'Sold' },
 ]
 
-const STATUSES: Status[] = ['available', 'reserved', 'sold']
+const STATUSES: Status[] = STAT_DEFS.map((def) => def.status)
 
 interface StatCardsProps {
   /** Bump to re-run the three count requests (kept in step with the table's own reloads). */

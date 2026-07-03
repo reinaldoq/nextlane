@@ -5,6 +5,7 @@ import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
 import InventoryPage from './pages/InventoryPage'
+import ReportIssueModal from './components/ReportIssueModal'
 
 const { Header, Content } = Layout
 const { Title, Text } = Typography
@@ -98,7 +99,7 @@ function AppFrame({ email }: { email: string }) {
             Nextlane DMS
           </Title>
           <Flex align="center" gap={16}>
-            {/* Task 12: "Report issue" trigger goes here */}
+            <ReportIssueModal />
             <Text style={{ color: token.colorTextLightSolid, opacity: 0.85 }}>{email}</Text>
             <Button onClick={handleLogout}>Log out</Button>
           </Flex>
