@@ -1,0 +1,325 @@
+import time
+import uuid
+
+import pytest
+from fastapi.testclient import TestClient
+
+from api.index import app
+
+
+@pytest.fixture(autouse=True)
+def _clean(clean_tables):
+    yield
+
+
+@pytest.fixture()
+def client(jwks_server) -> TestClient:
+    return TestClient(app)
+
+
+@pytest.fixture()
+def auth(make_token) -> dict:
+    return {"Authorization": f"Bearer {make_token()}"}
+
+
+def unique_vin() -> str:
+    return uuid.uuid4().hex[:17].upper()
+
+
+def vehicle_body(**overrides) -> dict:
+    body = {
+        "vin": unique_vin(),
+        "make": "Honda",
+        "model": "Accord",
+        "year": 2020,
+        "price_cents": 1_500_000,
+        "mileage_km": 12_000,
+    }
+    body.update(overrides)
+    return body
+
+
+def create_vehicle(client: TestClient, auth: dict, **overrides) -> dict:
+    r = client.post("/api/vehicles", json=vehicle_body(**overrides), headers=auth)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+# ---------------------------------------------------------------------------
+# 401 without token, on every route
+# ---------------------------------------------------------------------------
+
+
+def test_401_without_token_on_every_route(client: TestClient):
+    vid = "00000000-0000-0000-0000-000000000000"
+    requests = [
+        ("GET", "/api/vehicles", None),
+        ("POST", "/api/vehicles", vehicle_body()),
+        ("GET", f"/api/vehicles/{vid}", None),
+        ("PATCH", f"/api/vehicles/{vid}", {"price_cents": 1}),
+        ("DELETE", f"/api/vehicles/{vid}", None),
+        ("POST", f"/api/vehicles/{vid}/status", {"status": "reserved"}),
+    ]
+    for method, path, body in requests:
+        r = client.request(method, path, json=body)
+        assert r.status_code == 401, f"{method} {path} -> {r.status_code}"
+        assert r.json()["code"] == "unauthenticated"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/vehicles
+# ---------------------------------------------------------------------------
+
+
+def test_create_vehicle_returns_201_full_row(client: TestClient, auth: dict):
+    body = vehicle_body()
+    r = client.post("/api/vehicles", json=body, headers=auth)
+    assert r.status_code == 201, r.text
+    row = r.json()
+    assert uuid.UUID(row["id"])
+    assert row["vin"] == body["vin"]
+    assert row["make"] == "Honda"
+    assert row["model"] == "Accord"
+    assert row["year"] == 2020
+    assert row["status"] == "available"
+    assert row["price_cents"] == 1_500_000
+    assert isinstance(row["price_cents"], int)
+    assert row["mileage_km"] == 12_000
+
+
+def test_create_duplicate_vin_returns_409(client: TestClient, auth: dict):
+    vin = unique_vin()
+    create_vehicle(client, auth, vin=vin)
+    r = client.post("/api/vehicles", json=vehicle_body(vin=vin), headers=auth)
+    assert r.status_code == 409
+    assert r.json()["code"] == "duplicate_vin"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"vin": "abc"},
+        {"year": 1800},
+        {"price_cents": -100},
+        {"vin": "abc", "year": 1800, "price_cents": -100},
+    ],
+)
+def test_create_invalid_body_returns_422_validation_error(
+    client: TestClient, auth: dict, overrides: dict
+):
+    r = client.post("/api/vehicles", json=vehicle_body(**overrides), headers=auth)
+    assert r.status_code == 422
+    assert r.json()["code"] == "validation_error"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/vehicles (list)
+# ---------------------------------------------------------------------------
+
+
+def test_list_returns_items_and_total_envelope(client: TestClient, auth: dict):
+    for _ in range(3):
+        create_vehicle(client, auth)
+
+    r = client.get("/api/vehicles", headers=auth)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 3
+    assert len(body["items"]) == 3
+
+
+def test_list_pagination_limit_offset(client: TestClient, auth: dict):
+    for _ in range(3):
+        create_vehicle(client, auth)
+
+    r = client.get("/api/vehicles", params={"limit": 2}, headers=auth)
+    body = r.json()
+    assert len(body["items"]) == 2
+    assert body["total"] == 3
+
+    r = client.get("/api/vehicles", params={"limit": 2, "offset": 2}, headers=auth)
+    body = r.json()
+    assert len(body["items"]) == 1
+    assert body["total"] == 3
+
+
+def test_list_q_matches_make_case_insensitive(client: TestClient, auth: dict):
+    target = create_vehicle(client, auth, make="Toyota", model="Camry")
+    create_vehicle(client, auth, make="Honda", model="Civic")
+
+    r = client.get("/api/vehicles", params={"q": "toyota"}, headers=auth)
+    ids = {v["id"] for v in r.json()["items"]}
+    assert ids == {target["id"]}
+
+
+def test_list_q_matches_model_case_insensitive(client: TestClient, auth: dict):
+    create_vehicle(client, auth, make="Toyota", model="Camry")
+    target = create_vehicle(client, auth, make="Honda", model="Civic")
+
+    r = client.get("/api/vehicles", params={"q": "CIVIC"}, headers=auth)
+    ids = {v["id"] for v in r.json()["items"]}
+    assert ids == {target["id"]}
+
+
+def test_list_q_matches_vin_case_insensitive(client: TestClient, auth: dict):
+    vin = "ZZZUNIQUEVIN99999"
+    target = create_vehicle(client, auth, vin=vin)
+    create_vehicle(client, auth)
+
+    r = client.get("/api/vehicles", params={"q": vin.lower()}, headers=auth)
+    ids = {v["id"] for v in r.json()["items"]}
+    assert ids == {target["id"]}
+
+
+def test_list_filters_by_status(client: TestClient, auth: dict):
+    create_vehicle(client, auth)
+    reserved = create_vehicle(client, auth)
+    r = client.post(
+        f"/api/vehicles/{reserved['id']}/status", json={"status": "reserved"}, headers=auth
+    )
+    assert r.status_code == 200
+
+    r = client.get("/api/vehicles", params={"status": "reserved"}, headers=auth)
+    items = r.json()["items"]
+    assert {v["id"] for v in items} == {reserved["id"]}
+    assert all(v["status"] == "reserved" for v in items)
+
+
+def test_list_sort_price_cents_desc(client: TestClient, auth: dict):
+    create_vehicle(client, auth, price_cents=1000)
+    create_vehicle(client, auth, price_cents=3000)
+    create_vehicle(client, auth, price_cents=2000)
+
+    r = client.get("/api/vehicles", params={"sort": "price_cents:desc"}, headers=auth)
+    prices = [v["price_cents"] for v in r.json()["items"]]
+    assert prices == [3000, 2000, 1000]
+
+
+def test_list_sort_year_asc(client: TestClient, auth: dict):
+    create_vehicle(client, auth, year=2022)
+    create_vehicle(client, auth, year=1999)
+    create_vehicle(client, auth, year=2010)
+
+    r = client.get("/api/vehicles", params={"sort": "year:asc"}, headers=auth)
+    years = [v["year"] for v in r.json()["items"]]
+    assert years == [1999, 2010, 2022]
+
+
+def test_list_sort_unknown_field_returns_422(client: TestClient, auth: dict):
+    create_vehicle(client, auth)
+    r = client.get("/api/vehicles", params={"sort": "evil:asc"}, headers=auth)
+    assert r.status_code == 422
+
+
+def test_list_default_sort_is_created_at_desc(client: TestClient, auth: dict):
+    v1 = create_vehicle(client, auth)
+    time.sleep(0.01)
+    v2 = create_vehicle(client, auth)
+    time.sleep(0.01)
+    v3 = create_vehicle(client, auth)
+
+    r = client.get("/api/vehicles", headers=auth)
+    ids = [v["id"] for v in r.json()["items"]]
+    assert ids == [v3["id"], v2["id"], v1["id"]]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/vehicles/{id}
+# ---------------------------------------------------------------------------
+
+
+def test_get_by_id_returns_200(client: TestClient, auth: dict):
+    v = create_vehicle(client, auth)
+    r = client.get(f"/api/vehicles/{v['id']}", headers=auth)
+    assert r.status_code == 200
+    assert r.json()["id"] == v["id"]
+
+
+def test_get_unknown_uuid_returns_404(client: TestClient, auth: dict):
+    r = client.get(f"/api/vehicles/{uuid.uuid4()}", headers=auth)
+    assert r.status_code == 404
+    assert r.json()["code"]
+
+
+def test_get_malformed_uuid_returns_422(client: TestClient, auth: dict):
+    # Consistent choice across the router: malformed path uuids are a 422
+    # validation error (FastAPI's own path-param parsing), not a 404.
+    r = client.get("/api/vehicles/not-a-uuid", headers=auth)
+    assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/vehicles/{id}
+# ---------------------------------------------------------------------------
+
+
+def test_patch_updates_subset(client: TestClient, auth: dict):
+    v = create_vehicle(client, auth, price_cents=1000)
+    r = client.patch(f"/api/vehicles/{v['id']}", json={"price_cents": 5000}, headers=auth)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["price_cents"] == 5000
+    assert body["make"] == v["make"]
+    assert body["vin"] == v["vin"]
+
+
+def test_patch_unknown_id_returns_404(client: TestClient, auth: dict):
+    r = client.patch(f"/api/vehicles/{uuid.uuid4()}", json={"price_cents": 1}, headers=auth)
+    assert r.status_code == 404
+
+
+def test_patch_malformed_uuid_returns_422(client: TestClient, auth: dict):
+    r = client.patch("/api/vehicles/not-a-uuid", json={"price_cents": 1}, headers=auth)
+    assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/vehicles/{id}
+# ---------------------------------------------------------------------------
+
+
+def test_delete_returns_204_then_404_on_get(client: TestClient, auth: dict):
+    v = create_vehicle(client, auth)
+    r = client.delete(f"/api/vehicles/{v['id']}", headers=auth)
+    assert r.status_code == 204
+    assert r.content == b""
+
+    r = client.get(f"/api/vehicles/{v['id']}", headers=auth)
+    assert r.status_code == 404
+
+
+def test_delete_unknown_id_returns_404(client: TestClient, auth: dict):
+    r = client.delete(f"/api/vehicles/{uuid.uuid4()}", headers=auth)
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /api/vehicles/{id}/status
+# ---------------------------------------------------------------------------
+
+
+def test_status_available_to_reserved_returns_200_new_status(client: TestClient, auth: dict):
+    v = create_vehicle(client, auth)
+    r = client.post(f"/api/vehicles/{v['id']}/status", json={"status": "reserved"}, headers=auth)
+    assert r.status_code == 200
+    assert r.json()["status"] == "reserved"
+    assert r.json()["id"] == v["id"]
+
+
+def test_status_illegal_transition_returns_422(client: TestClient, auth: dict):
+    v = create_vehicle(client, auth)
+    r = client.post(f"/api/vehicles/{v['id']}/status", json={"status": "sold"}, headers=auth)
+    assert r.status_code == 200
+
+    r = client.post(f"/api/vehicles/{v['id']}/status", json={"status": "available"}, headers=auth)
+    assert r.status_code == 422
+    body = r.json()
+    assert body["code"] == "illegal_transition"
+    assert body["details"] == {"from": "sold", "to": "available"}
+
+
+def test_status_unknown_id_returns_404(client: TestClient, auth: dict):
+    r = client.post(
+        f"/api/vehicles/{uuid.uuid4()}/status", json={"status": "reserved"}, headers=auth
+    )
+    assert r.status_code == 404
