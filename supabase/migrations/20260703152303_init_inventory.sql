@@ -22,9 +22,10 @@ create table app_events (
   created_at timestamptz not null default now()
 );
 create index app_events_status_idx on app_events (status);
+create index app_events_created_idx on app_events (created_at desc);
 
 create or replace function set_updated_at() returns trigger
-language plpgsql as $$ begin new.updated_at = now(); return new; end $$;
+language plpgsql set search_path = '' as $$ begin new.updated_at = now(); return new; end $$;
 create trigger vehicles_updated_at before update on vehicles
   for each row execute function set_updated_at();
 

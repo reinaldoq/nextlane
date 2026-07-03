@@ -24,6 +24,7 @@ insert into vehicles (vin, make, model, year, price_cents, mileage_km, status) v
   ('W0LEP9TJZES0VL5WA', 'Opel',        'Corsa',   2015,  699000, 118000, 'available')
 on conflict (vin) do nothing;
 
-insert into app_events (kind, message, context, status) values
-  ('bug_report', 'Vehicle photo upload fails with a 500 error when attaching more than 5 images to a single listing.', '{}', 'new'),
-  ('bug_report', 'Filtering the inventory list by price range does not reset when clearing filters; stale results stay on screen.', '{}', 'new');
+insert into app_events (id, kind, message, context, status) values
+  ('a0000000-0000-4000-8000-000000000001', 'bug_report', 'Vehicle photo upload fails with a 500 error when attaching more than 5 images to a single listing.', '{}', 'new'),
+  ('a0000000-0000-4000-8000-000000000002', 'bug_report', 'Filtering the inventory list by price range does not reset when clearing filters; stale results stay on screen.', '{}', 'new')
+on conflict (id) do nothing;
