@@ -31,7 +31,7 @@ function DeleteVehicleButton({ vehicle, refresh }: DeleteVehicleButtonProps) {
     <Popconfirm
       title={`Delete ${vehicle.make} ${vehicle.model}?`}
       description="This permanently removes the vehicle."
-      okText="Delete"
+      okText="Confirm"
       okButtonProps={{ danger: true }}
       onConfirm={() => void handleDelete()}
     >
