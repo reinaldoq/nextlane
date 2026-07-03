@@ -12,6 +12,8 @@ def pool() -> ConnectionPool:
         _pool = ConnectionPool(
             env("DATABASE_URL"),
             min_size=0,
+            # max_size=5: protective per-instance ceiling under the Supabase pooler's
+            # client cap; the sync threadpool is 40 but DB ops queue on this pool.
             max_size=5,
             open=True,
             kwargs={"row_factory": dict_row, "prepare_threshold": None, "autocommit": True},

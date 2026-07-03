@@ -1,6 +1,8 @@
+import os
 import time
 import uuid
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -143,6 +145,45 @@ def test_list_pagination_limit_offset(client: TestClient, auth: dict):
     assert body["total"] == 3
 
 
+def test_list_offset_past_end_reports_true_total(client: TestClient, auth: dict):
+    create_vehicle(client, auth)
+    create_vehicle(client, auth)
+
+    r = client.get("/api/vehicles", params={"offset": 50}, headers=auth)
+    assert r.status_code == 200
+    assert r.json() == {"items": [], "total": 2}
+
+
+def _insert_vehicles_with_identical_created_at(n: int) -> set[str]:
+    """Bypass the API: identical created_at forces the sort-key tie the API can't create."""
+    ids: set[str] = set()
+    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
+        for _ in range(n):
+            row = conn.execute(
+                "insert into vehicles (vin, make, model, year, price_cents, created_at) "
+                "values (%s, 'Tie', 'Breaker', 2020, 1000, "
+                "timestamptz '2026-01-01 00:00:00+00') returning id",
+                [unique_vin()],
+            ).fetchone()
+            ids.add(str(row[0]))
+    return ids
+
+
+def test_list_pagination_is_stable_when_created_at_ties(client: TestClient, auth: dict):
+    expected = _insert_vehicles_with_identical_created_at(5)
+
+    seen: list[str] = []
+    for offset in (0, 2, 4):
+        r = client.get("/api/vehicles", params={"limit": 2, "offset": offset}, headers=auth)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 5
+        seen.extend(v["id"] for v in body["items"])
+
+    assert len(seen) == len(set(seen)), f"duplicate ids across pages: {seen}"
+    assert set(seen) == expected, "pages must cover every row exactly once"
+
+
 def test_list_q_matches_make_case_insensitive(client: TestClient, auth: dict):
     target = create_vehicle(client, auth, make="Toyota", model="Camry")
     create_vehicle(client, auth, make="Honda", model="Civic")
@@ -167,6 +208,18 @@ def test_list_q_matches_vin_case_insensitive(client: TestClient, auth: dict):
     create_vehicle(client, auth)
 
     r = client.get("/api/vehicles", params={"q": vin.lower()}, headers=auth)
+    ids = {v["id"] for v in r.json()["items"]}
+    assert ids == {target["id"]}
+
+
+@pytest.mark.parametrize("literal_make, q", [("A%B", "A%B"), ("A_B", "A_B")])
+def test_list_q_treats_like_metacharacters_literally(
+    client: TestClient, auth: dict, literal_make: str, q: str
+):
+    target = create_vehicle(client, auth, make=literal_make)
+    create_vehicle(client, auth, make="AXB")  # would match if %/_ acted as wildcards
+
+    r = client.get("/api/vehicles", params={"q": q}, headers=auth)
     ids = {v["id"] for v in r.json()["items"]}
     assert ids == {target["id"]}
 
@@ -271,6 +324,29 @@ def test_patch_unknown_id_returns_404(client: TestClient, auth: dict):
 def test_patch_malformed_uuid_returns_422(client: TestClient, auth: dict):
     r = client.patch("/api/vehicles/not-a-uuid", json={"price_cents": 1}, headers=auth)
     assert r.status_code == 422
+
+
+def test_patch_status_is_rejected_and_does_not_bypass_transitions(client: TestClient, auth: dict):
+    v = create_vehicle(client, auth)
+    r = client.post(f"/api/vehicles/{v['id']}/status", json={"status": "sold"}, headers=auth)
+    assert r.status_code == 200
+
+    # status is not a patchable field; the only path is POST /{id}/status.
+    r = client.patch(f"/api/vehicles/{v['id']}", json={"status": "available"}, headers=auth)
+    assert r.status_code == 422
+    assert r.json()["code"] == "validation_error"
+
+    r = client.get(f"/api/vehicles/{v['id']}", headers=auth)
+    assert r.json()["status"] == "sold"
+
+
+def test_patch_vin_to_existing_vin_returns_409(client: TestClient, auth: dict):
+    v1 = create_vehicle(client, auth)
+    v2 = create_vehicle(client, auth)
+
+    r = client.patch(f"/api/vehicles/{v2['id']}", json={"vin": v1["vin"]}, headers=auth)
+    assert r.status_code == 409
+    assert r.json()["code"] == "duplicate_vin"
 
 
 # ---------------------------------------------------------------------------

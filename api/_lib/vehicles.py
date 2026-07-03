@@ -3,7 +3,7 @@ from typing import Literal
 
 import psycopg
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import current_user
 from .db import pool
@@ -31,13 +31,17 @@ class VehicleIn(BaseModel):
 
 
 class VehiclePatch(BaseModel):
+    # extra="forbid" so a PATCH carrying "status" (or any unknown field) is a 422
+    # instead of being silently dropped; status changes must go through
+    # POST /vehicles/{id}/status where the transition matrix is enforced.
+    model_config = ConfigDict(extra="forbid")
+
     vin: str | None = Field(default=None, min_length=5, max_length=20)
     make: str | None = Field(default=None, min_length=1)
     model: str | None = Field(default=None, min_length=1)
     year: int | None = Field(default=None, ge=1950, le=2100)
     price_cents: int | None = Field(default=None, ge=0)
     mileage_km: int | None = Field(default=None, ge=0)
-    status: Status | None = None
 
 
 class StatusIn(BaseModel):
@@ -48,7 +52,23 @@ def _parse_sort(sort: str) -> str:
     field, _, direction = sort.partition(":")
     if field not in SORT_COLUMNS or direction not in SORT_DIRECTIONS:
         raise api_error(422, "validation_error", "invalid sort", details={"sort": sort})
-    return f"{field} {direction}"
+    # id tiebreaker keeps pagination stable when rows tie on the sort key.
+    return f"{field} {direction}, id desc"
+
+
+def _like_pattern(q: str) -> str:
+    """Escape LIKE metacharacters so q is matched literally (backslash is the default escape)."""
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _raise_duplicate_vin(e: psycopg.errors.UniqueViolation, vin: str | None):
+    """Map a vin unique violation to a 409; anything else is not ours -- re-raise (-> 500)."""
+    if e.diag.constraint_name != "vehicles_vin_key":
+        raise e
+    raise api_error(
+        409, "duplicate_vin", "a vehicle with this vin already exists", details={"vin": vin}
+    ) from e
 
 
 @router.get("/vehicles")
@@ -62,26 +82,32 @@ def list_vehicles(
     order_sql = _parse_sort(sort)
 
     clauses: list[str] = []
-    params: list = []
+    where_params: list = []
     if q:
-        like = f"%{q}%"
+        like = _like_pattern(q)
         clauses.append("(make ILIKE %s OR model ILIKE %s OR vin ILIKE %s)")
-        params.extend([like, like, like])
+        where_params.extend([like, like, like])
     if status:
         clauses.append("status = %s")
-        params.append(status)
+        where_params.append(status)
     where_sql = " AND ".join(clauses) if clauses else "true"
 
     sql = (
         f"SELECT *, count(*) over() as total FROM vehicles "
         f"WHERE {where_sql} ORDER BY {order_sql} LIMIT %s OFFSET %s"
     )
-    params.extend([limit, offset])
 
     with pool().connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = conn.execute(sql, [*where_params, limit, offset]).fetchall()
+        if rows:
+            total = rows[0]["total"]
+        else:
+            # Page is past the end (or no matches): the window function saw no
+            # rows, so count separately for an honest total.
+            total = conn.execute(
+                f"SELECT count(*) AS total FROM vehicles WHERE {where_sql}", where_params
+            ).fetchone()["total"]
 
-    total = rows[0]["total"] if rows else 0
     items = [{k: v for k, v in row.items() if k != "total"} for row in rows]
     return {"items": items, "total": total}
 
@@ -105,12 +131,7 @@ def create_vehicle(body: VehicleIn):
         with pool().connection() as conn:
             row = conn.execute(sql, params).fetchone()
     except psycopg.errors.UniqueViolation as e:
-        raise api_error(
-            409,
-            "duplicate_vin",
-            "a vehicle with this vin already exists",
-            details={"vin": body.vin},
-        ) from e
+        _raise_duplicate_vin(e, body.vin)
     return row
 
 
@@ -133,8 +154,11 @@ def patch_vehicle(vehicle_id: uuid.UUID, body: VehiclePatch):
     params = [*fields.values(), vehicle_id]
     sql = f"UPDATE vehicles SET {set_sql} WHERE id = %s RETURNING *"
 
-    with pool().connection() as conn:
-        row = conn.execute(sql, params).fetchone()
+    try:
+        with pool().connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+    except psycopg.errors.UniqueViolation as e:
+        _raise_duplicate_vin(e, fields.get("vin"))
     if row is None:
         raise api_error(404, "not_found", "vehicle not found")
     return row
