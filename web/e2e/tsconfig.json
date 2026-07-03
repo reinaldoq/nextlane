@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.node.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../node_modules/.tmp/tsconfig.e2e.tsbuildinfo",
+    "lib": ["ES2023", "DOM"],
+
+    /* Bundler mode: e2e/playwright.config.ts use extension-less relative
+       imports (like tsconfig.app.json), unlike vite.config.ts's nodenext
+       setup which has no relative imports to worry about. */
+    "module": "esnext",
+    "moduleResolution": "bundler"
+  },
+  "include": [".", "../playwright.config.ts"]
+}

@@ -9,6 +9,7 @@ dist/
 .vercel/
 test-results/
 playwright-report/
+web/e2e/.artifacts/
 .DS_Store
 .pytest_cache/
 .ruff_cache/

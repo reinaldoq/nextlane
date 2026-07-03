@@ -15,6 +15,8 @@ lint:
     uv run ruff check . && uv run ruff format --check . && npm --prefix web run lint && npm --prefix web run typecheck
 gate: lint test
     npm --prefix web run build
+e2e:
+    npm --prefix web run e2e
 seed:
     supabase db reset
 pin-api:
