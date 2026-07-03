@@ -1,3 +1,4 @@
+import json
 import os
 
 import psycopg
@@ -80,6 +81,67 @@ def test_create_client_error_returns_201(client: TestClient, auth: dict):
     assert r.json()["kind"] == "client_error"
 
 
+def test_create_client_error_with_multi_kb_nested_context_returns_201(
+    client: TestClient, auth: dict
+):
+    # Realistic client_error payload: a deep fake stack trace of ~8KB, well
+    # within the 16KB context cap.
+    frames = [
+        {
+            "file": f"/app/src/inventory/module_{i}.ts",
+            "line": 100 + i,
+            "col": 17,
+            "func": f"handleVehicleSave_{i}",
+            "source": "x" * 60,
+        }
+        for i in range(60)
+    ]
+    context = {
+        "page": "/inventory",
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "error": {
+            "name": "TypeError",
+            "message": "cannot read properties of undefined",
+            "stack": frames,
+        },
+    }
+    size = len(json.dumps(context))
+    assert 6_000 < size <= 16_384, f"fixture must be multi-KB but under the cap, got {size}"
+
+    r = client.post(
+        "/api/events", json=event_body(kind="client_error", context=context), headers=auth
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["context"] == context
+
+
+def test_create_context_over_16kb_returns_422(client: TestClient, auth: dict):
+    context = {"page": "/inventory", "blob": "x" * 17_000}
+    assert len(json.dumps(context)) > 16_384
+
+    r = client.post("/api/events", json=event_body(context=context), headers=auth)
+    assert r.status_code == 422
+    assert r.json()["code"] == "validation_error"
+
+
+def test_create_unknown_extra_field_returns_422(client: TestClient, auth: dict):
+    r = client.post("/api/events", json=event_body(severity="high"), headers=auth)
+    assert r.status_code == 422
+    assert r.json()["code"] == "validation_error"
+
+
+def test_create_omitted_context_defaults_to_empty_dict(client: TestClient, auth: dict):
+    body = event_body()
+    del body["context"]
+    r = client.post("/api/events", json=body, headers=auth)
+    assert r.status_code == 201, r.text
+    assert r.json()["context"] == {}
+
+    persisted = _fetch_event(r.json()["id"])
+    assert persisted is not None
+    assert persisted["context"] == {}
+
+
 # ---------------------------------------------------------------------------
 # 422 validation
 # ---------------------------------------------------------------------------
@@ -127,7 +189,9 @@ def test_rate_limit_31st_request_returns_429_and_other_user_unaffected(
     r = client.post("/api/events", json=event_body(), headers=auth_a)
     assert r.status_code == 429
     assert r.json()["code"] == "rate_limited"
-    assert r.headers.get("retry-after") == "60"
+    # Dynamic hint: seconds until the oldest request ages out of the window.
+    retry_after = int(r.headers["retry-after"])
+    assert 1 <= retry_after <= 60
 
     auth_b = {"Authorization": f"Bearer {make_token(sub='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')}"}
     r = client.post("/api/events", json=event_body(), headers=auth_b)

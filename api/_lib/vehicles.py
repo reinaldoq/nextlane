@@ -113,7 +113,9 @@ def list_vehicles(
     return {"items": items, "total": total}
 
 
-@router.post("/vehicles", status_code=201, dependencies=[Depends(rate_limited(100))])
+@router.post(
+    "/vehicles", status_code=201, dependencies=[Depends(rate_limited(100, scope="writes"))]
+)
 def create_vehicle(body: VehicleIn):
     sql = (
         "INSERT INTO vehicles (vin, make, model, year, price_cents, mileage_km, status) "
@@ -145,7 +147,7 @@ def get_vehicle(vehicle_id: uuid.UUID):
     return row
 
 
-@router.patch("/vehicles/{vehicle_id}", dependencies=[Depends(rate_limited(100))])
+@router.patch("/vehicles/{vehicle_id}", dependencies=[Depends(rate_limited(100, scope="writes"))])
 def patch_vehicle(vehicle_id: uuid.UUID, body: VehiclePatch):
     fields = body.model_dump(exclude_unset=True)
     if not fields:
@@ -165,7 +167,11 @@ def patch_vehicle(vehicle_id: uuid.UUID, body: VehiclePatch):
     return row
 
 
-@router.delete("/vehicles/{vehicle_id}", status_code=204, dependencies=[Depends(rate_limited(100))])
+@router.delete(
+    "/vehicles/{vehicle_id}",
+    status_code=204,
+    dependencies=[Depends(rate_limited(100, scope="writes"))],
+)
 def delete_vehicle(vehicle_id: uuid.UUID):
     with pool().connection() as conn:
         row = conn.execute(
@@ -175,7 +181,9 @@ def delete_vehicle(vehicle_id: uuid.UUID):
         raise api_error(404, "not_found", "vehicle not found")
 
 
-@router.post("/vehicles/{vehicle_id}/status", dependencies=[Depends(rate_limited(100))])
+@router.post(
+    "/vehicles/{vehicle_id}/status", dependencies=[Depends(rate_limited(100, scope="writes"))]
+)
 def set_vehicle_status(vehicle_id: uuid.UUID, body: StatusIn):
     new_status = body.status
     with pool().connection() as conn, conn.transaction():
