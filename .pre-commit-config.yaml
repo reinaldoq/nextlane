@@ -1,0 +1,12 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks: [{id: ruff}, {id: ruff-format}]
+  - repo: local
+    hooks:
+      - id: web-lint
+        name: web lint+typecheck
+        entry: bash -c 'npm --prefix web run lint && npm --prefix web run typecheck'
+        language: system
+        files: ^web/.*\.(ts|tsx)$
+        pass_filenames: false
