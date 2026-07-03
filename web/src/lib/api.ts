@@ -28,6 +28,8 @@ export interface ApiFetchOptions {
   body?: unknown
   /** Query string parameters; `undefined` values are skipped. */
   params?: QueryParams
+  /** Forwarded to `fetch`; lets callers cancel in-flight requests (e.g. debounced search). */
+  signal?: AbortSignal
 }
 
 function buildQuery(params?: QueryParams): string {
@@ -60,7 +62,7 @@ export async function apiFetch<T>(path: string, opts: ApiFetchOptions = {}): Pro
   const headers = new Headers()
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
-  const init: RequestInit = { method: opts.method ?? 'GET', headers }
+  const init: RequestInit = { method: opts.method ?? 'GET', headers, signal: opts.signal }
   if (opts.body !== undefined) {
     headers.set('Content-Type', 'application/json')
     init.body = JSON.stringify(opts.body)
@@ -96,7 +98,8 @@ export async function apiFetch<T>(path: string, opts: ApiFetchOptions = {}): Pro
 
 /** Thin verb helpers over {@link apiFetch}. */
 export const api = {
-  get: <T>(path: string, params?: QueryParams): Promise<T> => apiFetch<T>(path, { params }),
+  get: <T>(path: string, params?: QueryParams, signal?: AbortSignal): Promise<T> =>
+    apiFetch<T>(path, { params, signal }),
   post: <T>(path: string, body?: unknown): Promise<T> =>
     apiFetch<T>(path, { method: 'POST', body }),
   patch: <T>(path: string, body: unknown): Promise<T> =>

@@ -4,6 +4,7 @@ import { Button, Flex, Layout, Spin, Typography, theme } from 'antd'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
+import InventoryPage from './pages/InventoryPage'
 
 const { Header, Content } = Layout
 const { Title, Text } = Typography
@@ -110,16 +111,12 @@ function AppFrame({ email }: { email: string }) {
   )
 }
 
-function InventoryPlaceholder() {
-  return <Text>Inventory coming soon</Text>
-}
-
 function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<AuthGuard />}>
-        <Route index element={<InventoryPlaceholder />} />
+        <Route index element={<InventoryPage />} />
       </Route>
     </Routes>
   )
