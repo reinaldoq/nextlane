@@ -3,9 +3,9 @@
 Driven against the fake engine stub (fake_engine.py) so the whole module
 runs with no network and no real engine CLI, except:
 
-- the fixture-parser test, which parses a REAL captured claude transcript
-  (tests/rails/fixtures/claude-transcript.txt, captured once manually with a
-  trivial "pong" prompt -- see module docstring below for what it showed), and
+- the fixture-parser tests, which parse REAL captured claude transcripts
+  (tests/rails/fixtures/claude-transcript*.txt, captured manually with a
+  trivial "pong" prompt -- see the parser tests for what each showed), and
 - the RAILS_REAL_ENGINE=1 gated test at the bottom, skipped by default/CI.
 """
 
@@ -22,7 +22,9 @@ from rails.adapters.base import SessionError, SessionResult
 from rails.adapters.claude import ClaudeAdapter, parse_claude_transcript
 from rails.config import RailsConfig
 
-FIXTURE = Path(__file__).parent / "fixtures" / "claude-transcript.txt"
+FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURE_SUCCESS = FIXTURES / "claude-transcript.txt"
+FIXTURE_BUDGET_EXCEEDED = FIXTURES / "claude-transcript-budget-exceeded.txt"
 
 
 def make_config(**over) -> RailsConfig:
@@ -44,6 +46,8 @@ def test_build_argv_exact():
         "claude",
         "-p",
         "do the thing",
+        "--setting-sources",
+        "project,local",
         "--verbose",
         "--output-format",
         "stream-json",
@@ -83,6 +87,7 @@ def test_run_ok_extracts_final_message_cost_and_transcript(fake_binary, tmp_cwd)
     assert isinstance(result, SessionResult)
     assert result.engine == "claude"
     assert result.ok is True
+    assert result.explicit_result is True
     assert result.raw_exit_code == 0
     assert result.final_message == "fake engine final message"
     assert result.cost_usd == pytest.approx(0.0123)
@@ -103,6 +108,24 @@ def test_run_fail_sets_ok_false_without_raising(fake_binary, tmp_cwd):
 
     assert result.ok is False
     assert result.raw_exit_code != 0
+
+
+def test_run_exit_zero_without_result_event_is_ok_but_not_explicit(fake_binary, tmp_cwd):
+    """An engine stream that exits 0 but never emits its terminal result
+    event (crash-adjacent truncation, or an engine that simply has no such
+    event) keeps ok=True -- exit code semantics are unchanged -- but
+    explicit_result=False flags that the engine never *said* it finished.
+    Task 6's loop should treat ok and not explicit_result as suspicious."""
+    argv, extra_env = fake_binary(shape="claude", behavior="ok_no_result")
+    adapter = ClaudeAdapter(make_config(), binary=argv)
+
+    result = adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
+
+    assert result.ok is True
+    assert result.raw_exit_code == 0
+    assert result.explicit_result is False
+    # fallback path: final message comes from the last assistant text block
+    assert result.final_message == "fake engine final message"
 
 
 def test_run_timeout_raises_session_error_quickly_and_kills_child(fake_binary, tmp_cwd):
@@ -152,31 +175,61 @@ def test_env_whitelist_boundary_holds_through_adapter(fake_binary, tmp_cwd, monk
     assert "GIT_SSH_COMMAND" not in child_env
 
 
-# --- parser: built against the REAL captured fixture ------------------------
+# --- parser: built against REAL captured fixtures ----------------------------
 
 
-def test_parse_claude_transcript_from_real_fixture():
-    """Parses tests/rails/fixtures/claude-transcript.txt, captured once with
-    `claude -p "Reply with exactly the word: pong" --verbose --output-format
-    stream-json --max-budget-usd 0.05` in a scratch dir.
+def test_parse_claude_transcript_success_fixture():
+    """Parses tests/rails/fixtures/claude-transcript.txt, captured with
+    `claude -p "Reply with exactly the word: pong" --setting-sources
+    project,local --verbose --output-format stream-json --max-budget-usd
+    0.25` in a scratch dir (actual cost $0.0436; local paths in the init
+    event's cwd/memory_paths scrubbed, everything else verbatim).
 
-    That real run hit its $0.05 budget cap mid-stream: the terminal `result`
-    event has subtype "error_max_budget_usd" and `is_error: true`, and (unlike
-    the successful-run shape documented in the plan) it carries NO `result`
-    text field at all -- the model had already said "pong" in an `assistant`
-    text block before the budget check fired. This is exactly the fallback
-    path the parser contract describes ("fallback: last assistant text
-    event"), discovered for free by using a real capture instead of a
-    hand-designed fixture.
+    Happy path: the terminal `result` event has subtype "success",
+    `is_error: false`, a `result` text field, and `total_cost_usd`.
     """
-    lines = FIXTURE.read_text().splitlines()
+    lines = FIXTURE_SUCCESS.read_text().splitlines()
 
-    final_message, cost_usd, result_ok = parse_claude_transcript(lines)
+    final_message, cost_usd, result_ok, saw_result = parse_claude_transcript(lines)
 
-    assert "pong" in final_message.lower()
-    assert isinstance(cost_usd, float)
+    assert final_message == "pong"
+    assert cost_usd == pytest.approx(0.043588)
+    assert result_ok is True
+    assert saw_result is True
+
+
+def test_parse_claude_transcript_budget_exceeded_fixture():
+    """Parses tests/rails/fixtures/claude-transcript-budget-exceeded.txt --
+    hand-trimmed from an earlier real capture whose run hit its $0.05 budget
+    cap mid-stream: the terminal `result` event has subtype
+    "error_max_budget_usd", `is_error: true`, and NO `result` text field at
+    all -- the model had already said "pong" in an `assistant` text block
+    before the budget check fired. This pins the fallback path the parser
+    contract describes ("fallback: last assistant text event").
+    """
+    lines = FIXTURE_BUDGET_EXCEEDED.read_text().splitlines()
+
+    final_message, cost_usd, result_ok, saw_result = parse_claude_transcript(lines)
+
+    assert final_message == "pong"  # fallback: from the assistant event, not `result`
     assert cost_usd == pytest.approx(0.202691)
     assert result_ok is False  # is_error: true on the real result event
+    assert saw_result is True
+
+
+def test_parse_claude_transcript_no_result_event():
+    lines = [
+        json.dumps(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "partial"}]}}
+        )
+    ]
+
+    final_message, cost_usd, result_ok, saw_result = parse_claude_transcript(lines)
+
+    assert final_message == "partial"
+    assert cost_usd is None
+    assert result_ok is True  # no result event seen -- exit code alone decides ok
+    assert saw_result is False
 
 
 # --- gated real-engine test --------------------------------------------------

@@ -28,6 +28,13 @@ from rails.config import RailsConfig
 
 @dataclass
 class SessionResult:
+    """Outcome of one agent session.
+
+    Note for Task 6's loop: `ok and not explicit_result` is suspicious --
+    the process exited 0 but the engine never emitted its terminal result
+    event (truncated stream, wrapper swallowing output, ...).
+    """
+
     engine: str
     ok: bool  # process exit 0 (and, where the engine reports it, no in-band error)
     final_message: str  # engine's last assistant text
@@ -35,6 +42,7 @@ class SessionResult:
     duration_s: float
     cost_usd: float | None  # claude reports; others None
     raw_exit_code: int
+    explicit_result: bool  # engine emitted its terminal result event (claude: `result`)
 
 
 class SessionError(RuntimeError):
@@ -71,10 +79,12 @@ class _SubprocessAdapter:
     Subclasses implement:
       - `default_binary() -> list[str]`
       - `build_argv(prompt) -> list[str]`
-      - `_parse(lines: list[str]) -> tuple[str, float | None, bool]` returning
-        (final_message, cost_usd, result_ok), where result_ok reflects
-        whatever the engine's own event stream says about success (default:
-        always True -- exit code alone decides `ok`).
+      - `_parse(lines: list[str]) -> tuple[str, float | None, bool, bool]`
+        returning (final_message, cost_usd, result_ok, saw_result), where
+        result_ok reflects whatever the engine's own event stream says about
+        success (default: always True -- exit code alone decides `ok`) and
+        saw_result is whether the engine emitted its terminal result event
+        (or that engine's equivalent).
     """
 
     name: str
@@ -89,9 +99,9 @@ class _SubprocessAdapter:
     def build_argv(self, prompt: str) -> list[str]:  # pragma: no cover - overridden
         raise NotImplementedError
 
-    def _parse(self, lines: list[str]) -> tuple[str, float | None, bool]:
+    def _parse(self, lines: list[str]) -> tuple[str, float | None, bool, bool]:
         """Default: nothing engine-specific to extract."""
-        return "", None, True
+        return "", None, True, False
 
     def run(
         self,
@@ -157,7 +167,8 @@ class _SubprocessAdapter:
             stderr_thread.join(timeout=5)
 
         duration_s = time.monotonic() - start
-        final_message, cost_usd, result_ok = self._parse(raw_lines)
+        final_message, cost_usd, result_ok, saw_result = self._parse(raw_lines)
+        # ok semantics unchanged by explicit_result: exit 0 + no in-band error.
         ok = proc.returncode == 0 and result_ok
 
         return SessionResult(
@@ -168,4 +179,5 @@ class _SubprocessAdapter:
             duration_s=duration_s,
             cost_usd=cost_usd,
             raw_exit_code=proc.returncode,
+            explicit_result=saw_result,
         )

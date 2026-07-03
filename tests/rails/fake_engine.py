@@ -15,6 +15,8 @@ letting real CLI argv shapes (e.g. the claude adapter's `-p <prompt>
 
 FAKE_BEHAVIOR:
   ok              -- emit a normal transcript for FAKE_SHAPE, exit 0
+  ok_no_result    -- like ok but WITHOUT the terminal result event (exit 0):
+                     exercises SessionResult.explicit_result=False
   fail            -- emit a normal transcript for FAKE_SHAPE, exit 1
   timeout         -- write our own pid to "fake_engine.pid" (so tests can
                      confirm we actually die), then sleep 300s
@@ -45,12 +47,22 @@ FINAL_TEXT = "fake engine final message"
 FAKE_COST_USD = 0.0123
 
 
-def _emit_claude(ok: bool) -> None:
+def _emit_claude(ok: bool, with_result: bool = True) -> None:
+    # Shape mirrors tests/rails/fixtures/claude-transcript.txt (real capture,
+    # claude 2.1.198 with --setting-sources project,local): init +
+    # rate_limit_event + assistant + terminal result event.
     events = [
         {
             "type": "system",
             "subtype": "init",
             "cwd": os.getcwd(),
+            "session_id": "fake-session",
+            "model": "fake-model",
+            "permissionMode": "default",
+        },
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {"status": "allowed"},
             "session_id": "fake-session",
         },
         {
@@ -61,14 +73,17 @@ def _emit_claude(ok: bool) -> None:
                 "content": [{"type": "text", "text": FINAL_TEXT}],
             },
         },
-        {
-            "type": "result",
-            "subtype": "success" if ok else "error",
-            "is_error": not ok,
-            "result": FINAL_TEXT,
-            "total_cost_usd": FAKE_COST_USD,
-        },
     ]
+    if with_result:
+        events.append(
+            {
+                "type": "result",
+                "subtype": "success" if ok else "error",
+                "is_error": not ok,
+                "result": FINAL_TEXT,
+                "total_cost_usd": FAKE_COST_USD,
+            }
+        )
     for event in events:
         print(json.dumps(event), flush=True)
 
@@ -116,6 +131,10 @@ def main() -> int:
         _, relpath, content = behavior.split(":", 2)
         Path(relpath).write_text(content)
         behavior = "ok"
+
+    if behavior == "ok_no_result":
+        _emit_claude(True, with_result=False)
+        return 0
 
     ok = behavior == "ok"
     emitter = _EMITTERS.get(shape, _emit_claude)
