@@ -13,4 +13,3 @@ playwright-report/
 .pytest_cache/
 .ruff_cache/
 supabase/.temp/
-.vercel
