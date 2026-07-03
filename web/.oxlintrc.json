@@ -6,6 +6,8 @@
   },
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error"
   }
 }
