@@ -1,3 +1,8 @@
+set dotenv-load := true
+
+default:
+    @just --list
+
 dev-api:
     uv run uvicorn api.index:app --reload --port 8000
 dev-web:

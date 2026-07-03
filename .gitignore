@@ -10,3 +10,6 @@ dist/
 test-results/
 playwright-report/
 .DS_Store
+.pytest_cache/
+.ruff_cache/
+supabase/.temp/

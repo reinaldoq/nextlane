@@ -1,9 +1,16 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
-    hooks: [{id: ruff}, {id: ruff-format}]
   - repo: local
     hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
       - id: web-lint
         name: web lint+typecheck
         entry: bash -c 'npm --prefix web run lint && npm --prefix web run typecheck'
