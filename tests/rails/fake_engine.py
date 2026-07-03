@@ -17,17 +17,22 @@ FAKE_BEHAVIOR:
   ok              -- emit a normal transcript for FAKE_SHAPE, exit 0
   ok_no_result    -- like ok but WITHOUT the terminal result event (exit 0):
                      exercises SessionResult.explicit_result=False
+  bad_utf8        -- like ok but with a raw non-UTF-8 line (0xff bytes)
+                     emitted BETWEEN a valid event and the terminal result
+                     event: exercises the adapter's errors="replace" decode
+                     (a strict decoder dies mid-stream and loses the result)
   fail            -- emit a normal transcript for FAKE_SHAPE, exit 1
   timeout         -- write our own pid to "fake_engine.pid" (so tests can
                      confirm we actually die), then sleep 300s
   echo_env        -- print os.environ as a single JSON line, exit 0 (used to
                      prove the env whitelist boundary holds through the
                      adapter, not just in RailsConfig unit tests)
-  write_file:<relpath>:<content>
+  write_file:<relpath>:<content>[:<outcome>]
                   -- write <content> to <relpath> under cwd, then behave
-                     like "ok" (relpath/content may not contain ":" beyond
-                     the two separators — content is everything after the
-                     second ":")
+                     like <outcome> ("ok" or "fail", default "ok"). The
+                     fail composition simulates an engine that edited files
+                     THEN exited nonzero (Task 6's same-worktree retry).
+                     Neither relpath nor content may contain ":".
 
 FAKE_SHAPE = claude | codex | gemini -- which engine's real output shape to
   emit. Field names are lifted from one manually captured real run per
@@ -47,11 +52,11 @@ FINAL_TEXT = "fake engine final message"
 FAKE_COST_USD = 0.0123
 
 
-def _emit_claude(ok: bool, with_result: bool = True) -> None:
+def _claude_events(ok: bool) -> list[dict]:
     # Shape mirrors tests/rails/fixtures/claude-transcript.txt (real capture,
     # claude 2.1.198 with --setting-sources project,local): init +
     # rate_limit_event + assistant + terminal result event.
-    events = [
+    return [
         {
             "type": "system",
             "subtype": "init",
@@ -73,19 +78,35 @@ def _emit_claude(ok: bool, with_result: bool = True) -> None:
                 "content": [{"type": "text", "text": FINAL_TEXT}],
             },
         },
+        {
+            "type": "result",
+            "subtype": "success" if ok else "error",
+            "is_error": not ok,
+            "result": FINAL_TEXT,
+            "total_cost_usd": FAKE_COST_USD,
+        },
     ]
-    if with_result:
-        events.append(
-            {
-                "type": "result",
-                "subtype": "success" if ok else "error",
-                "is_error": not ok,
-                "result": FINAL_TEXT,
-                "total_cost_usd": FAKE_COST_USD,
-            }
-        )
+
+
+def _emit_claude(ok: bool, with_result: bool = True) -> None:
+    events = _claude_events(ok)
+    if not with_result:
+        events = events[:-1]
     for event in events:
         print(json.dumps(event), flush=True)
+
+
+def _emit_claude_bad_utf8() -> None:
+    """Valid events, then a raw non-UTF-8 line, then the terminal result
+    event -- so a strict-decoding adapter loses the result event while a
+    replace-decoding one keeps everything."""
+    events = _claude_events(True)
+    for event in events[:-1]:
+        print(json.dumps(event), flush=True)
+    sys.stdout.flush()
+    sys.stdout.buffer.write(b"\xff raw binary noise \xff\n")
+    sys.stdout.buffer.flush()
+    print(json.dumps(events[-1]), flush=True)
 
 
 def _emit_codex(ok: bool) -> None:
@@ -128,12 +149,21 @@ def main() -> int:
         return 0
 
     if behavior.startswith("write_file:"):
-        _, relpath, content = behavior.split(":", 2)
+        parts = behavior.split(":")
+        if len(parts) == 4:
+            _, relpath, content, outcome = parts
+        else:
+            _, relpath, content = parts
+            outcome = "ok"
         Path(relpath).write_text(content)
-        behavior = "ok"
+        behavior = outcome
 
     if behavior == "ok_no_result":
         _emit_claude(True, with_result=False)
+        return 0
+
+    if behavior == "bad_utf8":
+        _emit_claude_bad_utf8()
         return 0
 
     ok = behavior == "ok"

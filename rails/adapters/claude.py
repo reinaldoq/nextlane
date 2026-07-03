@@ -15,24 +15,24 @@ defensive code.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from rails.adapters.base import _SubprocessAdapter
+from rails.adapters.base import ParsedTranscript, _SubprocessAdapter
 
 
-def parse_claude_transcript(lines: list[str]) -> tuple[str, float | None, bool, bool]:
+def parse_claude_transcript(lines: list[str]) -> ParsedTranscript:
     """Parse newline-delimited claude `stream-json` events.
 
-    Returns (final_message, cost_usd, result_ok, saw_result):
-      - final_message: the terminal `result` event's `result` field if
-        present, else the text of the last `assistant` text-content block
-        seen, else "" (tolerate absence entirely).
-      - cost_usd: the `result` event's `total_cost_usd` field if present,
-        else None (tolerate absence).
-      - result_ok: False only if a `result` event was seen and its
-        `is_error` field is exactly True; True otherwise (including when no
-        `result` event was seen at all -- then exit code alone decides).
-      - saw_result: whether a terminal `result` event appeared at all;
-        surfaces as SessionResult.explicit_result.
+    - final_message: the terminal `result` event's `result` field if
+      present, else the text of the last `assistant` text-content block
+      seen, else "" (tolerate absence entirely).
+    - cost_usd: the `result` event's `total_cost_usd` field if present,
+      else None (tolerate absence).
+    - result_ok: False only if a `result` event was seen and its `is_error`
+      field is exactly True; True otherwise (including when no `result`
+      event was seen at all -- then exit code alone decides).
+    - saw_result: whether a terminal `result` event appeared at all;
+      surfaces as SessionResult.explicit_result.
     """
     last_assistant_text = ""
     result_text: str | None = None
@@ -67,18 +67,26 @@ def parse_claude_transcript(lines: list[str]) -> tuple[str, float | None, bool, 
                 cost_usd = event["total_cost_usd"]
             is_error = event.get("is_error") is True
 
-    final_message = result_text if result_text is not None else last_assistant_text
-    result_ok = not (saw_result and is_error)
-    return final_message, cost_usd, result_ok, saw_result
+    return ParsedTranscript(
+        final_message=result_text if result_text is not None else last_assistant_text,
+        cost_usd=cost_usd,
+        result_ok=not (saw_result and is_error),
+        saw_result=saw_result,
+    )
 
 
 class ClaudeAdapter(_SubprocessAdapter):
     name = "claude"
+    emits_terminal_result = True  # claude always ends the stream with a `result` event
 
     def default_binary(self) -> list[str]:
         return ["claude"]
 
-    def build_argv(self, prompt: str) -> list[str]:
+    def build_argv(self, prompt: str, *, cwd: Path, out_file: Path) -> list[str]:
+        # cwd/out_file are part of the base seam (codex needs them);
+        # claude needs neither -- Popen sets the working directory and the
+        # stream-json result arrives on stdout.
+        del cwd, out_file
         return [
             *self.binary,
             "-p",
@@ -105,5 +113,6 @@ class ClaudeAdapter(_SubprocessAdapter):
             str(self.cfg.max_budget_usd),
         ]
 
-    def _parse(self, lines: list[str]) -> tuple[str, float | None, bool, bool]:
+    def _parse(self, lines: list[str], *, cwd: Path, out_file: Path) -> ParsedTranscript:
+        del cwd, out_file  # claude's result arrives in-stream; nothing to read from disk
         return parse_claude_transcript(lines)

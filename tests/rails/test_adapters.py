@@ -18,7 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from rails.adapters.base import SessionError, SessionResult
+import rails.adapters.base as base_mod
+from rails.adapters.base import ParsedTranscript, SessionError, SessionResult
 from rails.adapters.claude import ClaudeAdapter, parse_claude_transcript
 from rails.config import RailsConfig
 
@@ -26,11 +27,19 @@ FIXTURES = Path(__file__).parent / "fixtures"
 FIXTURE_SUCCESS = FIXTURES / "claude-transcript.txt"
 FIXTURE_BUDGET_EXCEEDED = FIXTURES / "claude-transcript-budget-exceeded.txt"
 
+ARGV_CWD = Path("/work/tree")
+ARGV_OUT = Path("/work/tree/.rails-transcripts/run.out")
+
 
 def make_config(**over) -> RailsConfig:
     defaults = {"engine": "claude", "max_budget_usd": 2.0, "repo_root": Path(".")}
     defaults.update(over)
     return RailsConfig(**defaults)
+
+
+def stderr_sidecar(result: SessionResult) -> Path:
+    """stderr goes to a sidecar log next to the .jsonl transcript."""
+    return result.transcript_path.with_suffix(".stderr.log")
 
 
 # --- build_argv: pure function ---------------------------------------------
@@ -40,8 +49,10 @@ def test_build_argv_exact():
     cfg = make_config(max_budget_usd=1.5)
     adapter = ClaudeAdapter(cfg, binary=["claude"])
 
-    argv = adapter.build_argv("do the thing")
+    argv = adapter.build_argv("do the thing", cwd=ARGV_CWD, out_file=ARGV_OUT)
 
+    # claude needs neither cwd (Popen sets it) nor out_file (stream-json on
+    # stdout) -- both exist in the signature for the codex/gemini seam.
     assert argv == [
         "claude",
         "-p",
@@ -58,11 +69,20 @@ def test_build_argv_exact():
     ]
 
 
+def test_build_argv_is_pure():
+    adapter = ClaudeAdapter(make_config(), binary=["claude"])
+
+    first = adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)
+    second = adapter.build_argv("hi", cwd=Path("/elsewhere"), out_file=Path("/elsewhere/o.out"))
+
+    assert first == second  # no instance state mutated, no cwd/out_file leakage for claude
+
+
 def test_build_argv_uses_custom_binary_override():
     cfg = make_config()
     adapter = ClaudeAdapter(cfg, binary=["uv", "run", "claude"])
 
-    argv = adapter.build_argv("hi")
+    argv = adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)
 
     assert argv[:3] == ["uv", "run", "claude"]
     assert argv[3] == "-p"
@@ -72,7 +92,7 @@ def test_default_binary_is_bare_claude():
     cfg = make_config()
     adapter = ClaudeAdapter(cfg)
 
-    assert adapter.build_argv("hi")[0] == "claude"
+    assert adapter.build_argv("hi", cwd=ARGV_CWD, out_file=ARGV_OUT)[0] == "claude"
 
 
 # --- run(): fake-engine-driven behavior -------------------------------------
@@ -110,6 +130,23 @@ def test_run_fail_sets_ok_false_without_raising(fake_binary, tmp_cwd):
     assert result.raw_exit_code != 0
 
 
+def test_stderr_captured_in_sidecar_transcript_stays_pure_jsonl(fake_binary, tmp_cwd):
+    """stderr is captured to <transcript>.stderr.log so diagnostics survive,
+    while the .jsonl transcript stays machine-parseable line by line."""
+    argv, extra_env = fake_binary(shape="claude", behavior="fail")
+    adapter = ClaudeAdapter(make_config(), binary=argv)
+
+    result = adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
+
+    sidecar = stderr_sidecar(result)
+    assert sidecar.is_file()
+    assert "fake engine reporting failure" in sidecar.read_text()
+
+    for line in result.transcript_path.read_text().splitlines():
+        if line.strip():
+            json.loads(line)  # every transcript line is valid JSON
+
+
 def test_run_exit_zero_without_result_event_is_ok_but_not_explicit(fake_binary, tmp_cwd):
     """An engine stream that exits 0 but never emits its terminal result
     event (crash-adjacent truncation, or an engine that simply has no such
@@ -126,6 +163,63 @@ def test_run_exit_zero_without_result_event_is_ok_but_not_explicit(fake_binary, 
     assert result.explicit_result is False
     # fallback path: final message comes from the last assistant text block
     assert result.final_message == "fake engine final message"
+
+
+def test_engine_without_terminal_result_concept_never_flags_explicit_result(fake_binary, tmp_cwd):
+    """For engines that have NO terminal-result event at all (gemini),
+    emits_terminal_result=False makes explicit_result always True so Task
+    6's 'ok and not explicit_result is suspicious' heuristic can never
+    false-flag them."""
+
+    class NoTerminalResultAdapter(ClaudeAdapter):
+        name = "noterm"
+        emits_terminal_result = False
+
+    argv, extra_env = fake_binary(shape="gemini", behavior="ok")
+    adapter = NoTerminalResultAdapter(make_config(), binary=argv)
+
+    result = adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
+
+    assert result.ok is True
+    assert result.explicit_result is True
+
+
+def test_run_survives_non_utf8_bytes_mid_stream(fake_binary, tmp_cwd):
+    """A raw non-UTF-8 byte (0xff) between a valid event and the terminal
+    result event must not kill the capture: every line still lands in the
+    transcript (decoded with errors="replace") and the result event after
+    the noise still parses. Before the errors="replace" fix, the decode
+    error killed the pump thread silently: empty transcript, ok=True."""
+    argv, extra_env = fake_binary(shape="claude", behavior="bad_utf8")
+    adapter = ClaudeAdapter(make_config(), binary=argv)
+
+    result = adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
+
+    assert result.ok is True
+    assert result.explicit_result is True
+    assert result.final_message == "fake engine final message"
+    assert result.cost_usd == pytest.approx(0.0123)
+
+    contents = result.transcript_path.read_text()
+    assert contents.strip() != ""
+    assert '"total_cost_usd"' in contents  # the event AFTER the noise was captured
+    assert "�" in contents  # the noise line was kept (replaced), not dropped
+
+
+def test_pump_thread_failure_surfaces_as_session_error(fake_binary, tmp_cwd, monkeypatch):
+    """If transcript capture itself dies (disk full, closed stream, ...),
+    the run must NOT masquerade as ok=True over a truncated drain -- it is
+    a rails-side infrastructure failure, surfaced like a spawn failure."""
+    argv, extra_env = fake_binary(shape="claude", behavior="ok")
+    adapter = ClaudeAdapter(make_config(), binary=argv)
+
+    def boom(stream, write_line):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(base_mod, "_pump_stream", boom)
+
+    with pytest.raises(SessionError, match="transcript capture failed"):
+        adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
 
 
 def test_run_timeout_raises_session_error_quickly_and_kills_child(fake_binary, tmp_cwd):
@@ -151,6 +245,22 @@ def test_run_timeout_raises_session_error_quickly_and_kills_child(fake_binary, t
     # orphaned -- os.kill(pid, 0) raises ProcessLookupError for a dead pid.
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+def test_write_file_then_fail_files_persist_after_failed_run(fake_binary, tmp_cwd):
+    """Task 6's same-worktree retry depends on this: an engine that edited
+    files and THEN exited nonzero leaves its edits in the cwd -- the failed
+    run must not vaporize partial work."""
+    argv, extra_env = fake_binary(
+        shape="claude", behavior="write_file:artifact.txt:partial work:fail"
+    )
+    adapter = ClaudeAdapter(make_config(), binary=argv)
+
+    result = adapter.run("hello", cwd=tmp_cwd, extra_env=extra_env)
+
+    assert result.ok is False
+    assert result.raw_exit_code != 0
+    assert (tmp_cwd / "artifact.txt").read_text() == "partial work"
 
 
 def test_env_whitelist_boundary_holds_through_adapter(fake_binary, tmp_cwd, monkeypatch):
@@ -188,14 +298,13 @@ def test_parse_claude_transcript_success_fixture():
     Happy path: the terminal `result` event has subtype "success",
     `is_error: false`, a `result` text field, and `total_cost_usd`.
     """
-    lines = FIXTURE_SUCCESS.read_text().splitlines()
+    parsed = parse_claude_transcript(FIXTURE_SUCCESS.read_text().splitlines())
 
-    final_message, cost_usd, result_ok, saw_result = parse_claude_transcript(lines)
-
-    assert final_message == "pong"
-    assert cost_usd == pytest.approx(0.043588)
-    assert result_ok is True
-    assert saw_result is True
+    assert isinstance(parsed, ParsedTranscript)
+    assert parsed.final_message == "pong"
+    assert parsed.cost_usd == pytest.approx(0.043588)
+    assert parsed.result_ok is True
+    assert parsed.saw_result is True
 
 
 def test_parse_claude_transcript_budget_exceeded_fixture():
@@ -207,14 +316,12 @@ def test_parse_claude_transcript_budget_exceeded_fixture():
     before the budget check fired. This pins the fallback path the parser
     contract describes ("fallback: last assistant text event").
     """
-    lines = FIXTURE_BUDGET_EXCEEDED.read_text().splitlines()
+    parsed = parse_claude_transcript(FIXTURE_BUDGET_EXCEEDED.read_text().splitlines())
 
-    final_message, cost_usd, result_ok, saw_result = parse_claude_transcript(lines)
-
-    assert final_message == "pong"  # fallback: from the assistant event, not `result`
-    assert cost_usd == pytest.approx(0.202691)
-    assert result_ok is False  # is_error: true on the real result event
-    assert saw_result is True
+    assert parsed.final_message == "pong"  # fallback: from the assistant event, not `result`
+    assert parsed.cost_usd == pytest.approx(0.202691)
+    assert parsed.result_ok is False  # is_error: true on the real result event
+    assert parsed.saw_result is True
 
 
 def test_parse_claude_transcript_no_result_event():
@@ -224,12 +331,12 @@ def test_parse_claude_transcript_no_result_event():
         )
     ]
 
-    final_message, cost_usd, result_ok, saw_result = parse_claude_transcript(lines)
+    parsed = parse_claude_transcript(lines)
 
-    assert final_message == "partial"
-    assert cost_usd is None
-    assert result_ok is True  # no result event seen -- exit code alone decides ok
-    assert saw_result is False
+    assert parsed.final_message == "partial"
+    assert parsed.cost_usd is None
+    assert parsed.result_ok is True  # no result event seen -- exit code alone decides ok
+    assert parsed.saw_result is False
 
 
 # --- gated real-engine test --------------------------------------------------
