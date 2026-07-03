@@ -20,13 +20,14 @@ app = typer.Typer(
     help="Vendor-agnostic AI rails runner for the Nextlane DMS repo.",
     no_args_is_help=True,
 )
-console = Console()
+# Errors and diagnostics go to stderr so stdout stays clean for piping.
+err_console = Console(stderr=True)
 
 ENGINES = ("claude", "codex", "gemini")
 
 
 def _not_implemented() -> None:
-    console.print("not implemented — arrives in a later task")
+    err_console.print("not implemented — arrives in a later task")
     raise typer.Exit(1)
 
 
@@ -71,11 +72,14 @@ def gate() -> None:
 @app.command()
 def engines() -> None:
     """List supported engines and whether their CLI is available on PATH."""
+    # typer.echo (not rich): pipe-safe — never wraps at terminal width, so
+    # one engine is always exactly one line regardless of path length.
+    width = max(len(name) for name in ENGINES)
     for name in ENGINES:
         path = shutil.which(name)
         marker = "available" if path else "missing"
         location = f" ({path})" if path else ""
-        console.print(f"{name:<8} {marker}{location}")
+        typer.echo(f"{name:<{width}}  {marker}{location}")
 
 
 if __name__ == "__main__":

