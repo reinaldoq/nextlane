@@ -21,14 +21,23 @@ Prereqs: [uv](https://docs.astral.sh/uv/), Node (see `.nvmrc`), Docker,
 [Supabase CLI](https://supabase.com/docs/guides/cli).
 
 ```bash
-supabase start          # local Postgres + Auth + PostgREST
-just seed                # supabase db reset (applies migrations + seed.sql)
-just dev-api              # FastAPI on :8000
-just dev-web               # Vite dev server on :5173 (separate shell)
+supabase start   # local Postgres + Auth + PostgREST
+just seed        # supabase db reset (applies migrations + seed.sql)
+just dev-api     # FastAPI on :8000
+just dev-web     # Vite dev server on :5173 (separate shell)
 ```
 
 Copy `.env.example` for the env vars each half expects — `web/` reads Vite
 vars from `web/.env.local` (gitignored); `api/` reads process env directly.
+
+### Local auth caveat
+
+Local `supabase start` issues HS256 tokens, which the ES256-only API rejects
+by design. For a working local login, point `web/.env.local`'s VITE vars and
+the API's `SUPABASE_JWKS_URL`/`SUPABASE_JWT_ISSUER` at the hosted Supabase
+project instead (hybrid mode: hosted auth + local DB), then create a user
+with `scripts/create_user.sh`. The [deployed URL](https://nextlane-blond.vercel.app)
+is the fully-working reference environment.
 
 ## Tests
 

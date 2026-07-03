@@ -7,6 +7,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, generate_private_key
+from fastapi.testclient import TestClient
+
+from api.index import app
 
 # Default so bare `uv run pytest` works in a fresh shell (CI/just override it).
 os.environ.setdefault("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
@@ -67,6 +70,23 @@ def clean_tables():
     yield
 
 
+# --- shared trio for integration test modules (test_vehicles_api, test_events_api) ---
+# Deliberately NOT autouse: a conftest-level autouse `clean` would truncate tables
+# (and require DATABASE_URL) for every test in the suite, including the pure-unit
+# ones above. Each integration module opts in via its own tiny autouse wrapper
+# (`_clean`, 2 lines) instead. Named db_client/auth_headers (not client/auth) so
+# they don't shadow the probe-app `client` fixtures in test_auth.py/test_errors.py,
+# which stay local and untouched.
+@pytest.fixture()
+def clean(clean_tables):
+    yield
+
+
+@pytest.fixture()
+def db_client(jwks_server) -> TestClient:
+    return TestClient(app)
+
+
 @pytest.fixture()
 def make_token(ec_key, jwks_server):
     def _make(
@@ -96,3 +116,8 @@ def make_token(ec_key, jwks_server):
         return jwt.encode(claims, signing_key, algorithm=alg, headers={"kid": kid})
 
     return _make
+
+
+@pytest.fixture()
+def auth_headers(make_token) -> dict:
+    return {"Authorization": f"Bearer {make_token()}"}
