@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -18,6 +18,7 @@ import {
   DEFAULT_PAGE_SIZE,
   DEFAULT_SORT,
   PAGE_SIZE_OPTIONS,
+  SORT_FIELDS,
   useVehicleList,
   type SortField,
   type SortState,
@@ -64,6 +65,10 @@ function sortOrderFor(field: SortField, sort: SortState): 'ascend' | 'descend' |
   return sort.order === 'asc' ? 'ascend' : 'descend'
 }
 
+function isSortField(value: unknown): value is SortField {
+  return typeof value === 'string' && (SORT_FIELDS as readonly string[]).includes(value)
+}
+
 type TableChangeHandler = NonNullable<TableProps<Vehicle>['onChange']>
 
 /** Inventory table: server-driven search, status filter, column sort and pagination. */
@@ -79,6 +84,11 @@ function InventoryPage() {
   const [refreshKey, setRefreshKey] = useState(0)
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  // Task 12 children will receive this to reload the table + stats together.
+  const refresh = () => {
+    setRefreshKey((key) => key + 1)
+  }
 
   useEffect(
     () => () => {
@@ -109,12 +119,13 @@ function InventoryPage() {
   const handleTableChange: TableChangeHandler = (pagination, _filters, sorter, extra) => {
     if (extra.action === 'sort') {
       const single = Array.isArray(sorter) ? sorter[0] : sorter
-      if (single?.order) {
+      if (single?.order && isSortField(single.field)) {
         setSort({
-          field: single.field as SortField,
+          field: single.field,
           order: single.order === 'ascend' ? 'asc' : 'desc',
         })
       } else {
+        // Cleared sort or a column key outside the server whitelist: back to default.
         setSort(DEFAULT_SORT)
       }
       setPage(1)
@@ -136,56 +147,59 @@ function InventoryPage() {
 
   const hasActiveFilters = debouncedQuery.trim() !== '' || statusFilter !== 'all'
 
-  const columns: TableColumnsType<Vehicle> = [
-    {
-      title: 'VIN',
-      dataIndex: 'vin',
-      key: 'vin',
-      render: (vin: string) => <Text code>{vin}</Text>,
-    },
-    { title: 'Make', dataIndex: 'make', key: 'make' },
-    { title: 'Model', dataIndex: 'model', key: 'model' },
-    {
-      title: 'Year',
-      dataIndex: 'year',
-      key: 'year',
-      align: 'right',
-      sorter: true,
-      sortOrder: sortOrderFor('year', sort),
-    },
-    {
-      title: 'Price',
-      dataIndex: 'price_cents',
-      key: 'price_cents',
-      align: 'right',
-      sorter: true,
-      sortOrder: sortOrderFor('price_cents', sort),
-      render: (cents: number) => currencyFormatter.format(cents / 100),
-    },
-    {
-      title: 'Mileage',
-      dataIndex: 'mileage_km',
-      key: 'mileage_km',
-      align: 'right',
-      sorter: true,
-      sortOrder: sortOrderFor('mileage_km', sort),
-      render: (km: number) => `${mileageFormatter.format(km)} km`,
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      render: (status: Vehicle['status']) => (
-        <Tag color={STATUS_TAG_COLOR[status]}>{STATUS_LABEL[status]}</Tag>
-      ),
-    },
-    {
-      title: 'Updated',
-      dataIndex: 'updated_at',
-      key: 'updated_at',
-      render: (value: string) => updatedFormatter.format(new Date(value)),
-    },
-  ]
+  const columns: TableColumnsType<Vehicle> = useMemo(
+    () => [
+      {
+        title: 'VIN',
+        dataIndex: 'vin',
+        key: 'vin',
+        render: (vin: string) => <Text code>{vin}</Text>,
+      },
+      { title: 'Make', dataIndex: 'make', key: 'make' },
+      { title: 'Model', dataIndex: 'model', key: 'model' },
+      {
+        title: 'Year',
+        dataIndex: 'year',
+        key: 'year',
+        align: 'right',
+        sorter: true,
+        sortOrder: sortOrderFor('year', sort),
+      },
+      {
+        title: 'Price',
+        dataIndex: 'price_cents',
+        key: 'price_cents',
+        align: 'right',
+        sorter: true,
+        sortOrder: sortOrderFor('price_cents', sort),
+        render: (cents: number) => currencyFormatter.format(cents / 100),
+      },
+      {
+        title: 'Mileage',
+        dataIndex: 'mileage_km',
+        key: 'mileage_km',
+        align: 'right',
+        sorter: true,
+        sortOrder: sortOrderFor('mileage_km', sort),
+        render: (km: number) => `${mileageFormatter.format(km)} km`,
+      },
+      {
+        title: 'Status',
+        dataIndex: 'status',
+        key: 'status',
+        render: (status: Vehicle['status']) => (
+          <Tag color={STATUS_TAG_COLOR[status]}>{STATUS_LABEL[status]}</Tag>
+        ),
+      },
+      {
+        title: 'Updated',
+        dataIndex: 'updated_at',
+        key: 'updated_at',
+        render: (value: string) => updatedFormatter.format(new Date(value)),
+      },
+    ],
+    [sort],
+  )
 
   return (
     <Flex vertical gap={24} style={{ maxWidth: 1400, margin: '0 auto' }}>
@@ -196,13 +210,7 @@ function InventoryPage() {
           </Title>
           <Text type="secondary">Search, filter and track every vehicle on the lot.</Text>
         </Flex>
-        <Button
-          onClick={() => {
-            setRefreshKey((key) => key + 1)
-          }}
-        >
-          Refresh
-        </Button>
+        <Button onClick={refresh}>Refresh</Button>
       </Flex>
 
       <StatCards refreshKey={refreshKey} />
@@ -212,6 +220,7 @@ function InventoryPage() {
           <Flex align="center" justify="space-between" wrap="wrap" gap={12}>
             <Input.Search
               allowClear
+              aria-label="Search inventory"
               placeholder="Search by make, model or VIN"
               value={rawQuery}
               onChange={(event) => {
@@ -240,6 +249,7 @@ function InventoryPage() {
           )}
 
           <Table<Vehicle>
+            aria-label="Vehicle inventory"
             rowKey="id"
             columns={columns}
             dataSource={items}

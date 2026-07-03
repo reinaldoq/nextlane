@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { ApiError, api, type ListResponse, type Vehicle } from '../lib/api'
+import { ApiError, api, isAbortError, type ListResponse, type Vehicle } from '../lib/api'
 
 /** Columns the API accepts for `sort=field:dir` (kept in sync with the server whitelist). */
-export type SortField = 'created_at' | 'price_cents' | 'year' | 'mileage_km'
+export const SORT_FIELDS = ['created_at', 'price_cents', 'year', 'mileage_km'] as const
+export type SortField = (typeof SORT_FIELDS)[number]
 export type SortDirection = 'asc' | 'desc'
 
 export interface SortState {
@@ -29,10 +30,6 @@ export interface UseVehicleListResult {
   total: number
   loading: boolean
   error: string | null
-}
-
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === 'AbortError'
 }
 
 /**

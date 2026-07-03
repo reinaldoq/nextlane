@@ -20,6 +20,11 @@ export class ApiError extends Error {
   }
 }
 
+/** True for the DOMException `fetch` throws when a request is cancelled via AbortSignal. */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
 export type QueryParams = Record<string, string | number | boolean | undefined>
 
 export interface ApiFetchOptions {

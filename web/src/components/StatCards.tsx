@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Alert, Card, Col, Row, Statistic, theme } from 'antd'
-import { ApiError, api, type ListResponse, type Vehicle } from '../lib/api'
+import { Alert, Card, Col, Flex, Row, Statistic, Typography, theme } from 'antd'
+import { ApiError, api, isAbortError, type ListResponse, type Vehicle } from '../lib/api'
+
+const { Text } = Typography
 
 type Status = Vehicle['status']
 
@@ -15,9 +17,7 @@ const STAT_DEFS: StatDef[] = [
   { status: 'sold', label: 'Sold' },
 ]
 
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === 'AbortError'
-}
+const STATUSES: Status[] = ['available', 'reserved', 'sold']
 
 interface StatCardsProps {
   /** Bump to re-run the three count requests (kept in step with the table's own reloads). */
@@ -42,35 +42,34 @@ function StatCards({ refreshKey }: StatCardsProps) {
     setLoading(true)
     setError(null)
 
-    Promise.all([
-      api.get<ListResponse<Vehicle>>(
-        '/api/vehicles',
-        { status: 'available', limit: 1 },
-        controller.signal,
+    // TODO: consolidate these 3 count requests (+ the table's own list request:
+    // 4 requests per refresh) into a single future GET /api/vehicles/stats.
+    void Promise.allSettled(
+      STATUSES.map((status) =>
+        api.get<ListResponse<Vehicle>>('/api/vehicles', { status, limit: 1 }, controller.signal),
       ),
-      api.get<ListResponse<Vehicle>>(
-        '/api/vehicles',
-        { status: 'reserved', limit: 1 },
-        controller.signal,
-      ),
-      api.get<ListResponse<Vehicle>>(
-        '/api/vehicles',
-        { status: 'sold', limit: 1 },
-        controller.signal,
-      ),
-    ])
-      .then(([available, reserved, sold]) => {
-        if (!active) return
-        setCounts({ available: available.total, reserved: reserved.total, sold: sold.total })
-        setError(null)
+    ).then((results) => {
+      if (!active) return
+
+      const nextCounts: Partial<Record<Status, number>> = {}
+      let failure: unknown = null
+      results.forEach((result, index) => {
+        const status = STATUSES[index]
+        if (status === undefined) return
+        if (result.status === 'fulfilled') {
+          nextCounts[status] = result.value.total
+        } else if (!isAbortError(result.reason)) {
+          failure = result.reason
+        }
       })
-      .catch((err: unknown) => {
-        if (!active || isAbortError(err)) return
-        setError(err instanceof ApiError ? err.message : 'Failed to load stats.')
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
+
+      // Render whichever counts succeeded; a single shared line covers failures.
+      setCounts((prev) => ({ ...prev, ...nextCounts }))
+      if (failure !== null) {
+        setError(failure instanceof ApiError ? failure.message : 'Failed to load stats.')
+      }
+      setLoading(false)
+    })
 
     return () => {
       active = false
@@ -85,7 +84,10 @@ function StatCards({ refreshKey }: StatCardsProps) {
   }
 
   return (
-    <div>
+    <Flex vertical gap={8}>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        Total inventory — counts are not affected by the search or filters below.
+      </Text>
       <Row gutter={[16, 16]}>
         {STAT_DEFS.map(({ status, label }) => (
           <Col key={status} xs={24} sm={8}>
@@ -128,11 +130,11 @@ function StatCards({ refreshKey }: StatCardsProps) {
           type="warning"
           showIcon
           message={error}
-          style={{ marginTop: 12 }}
+          style={{ marginTop: 4 }}
           banner
         />
       )}
-    </div>
+    </Flex>
   )
 }
 
