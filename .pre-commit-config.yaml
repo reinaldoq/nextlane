@@ -15,5 +15,5 @@ repos:
         name: web lint+typecheck
         entry: bash -c 'npm --prefix web run lint && npm --prefix web run typecheck'
         language: system
-        files: ^web/.*\.(ts|tsx)$
+        files: ^web/(.*\.(ts|tsx)|package\.json|tsconfig.*\.json|\.oxlintrc\.json)$
         pass_filenames: false
