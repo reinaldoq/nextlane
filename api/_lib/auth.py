@@ -14,7 +14,7 @@ _UNAUTHENTICATED_HEADERS = {"WWW-Authenticate": "Bearer"}
 def _client() -> jwt.PyJWKClient:
     url = env("SUPABASE_JWKS_URL")
     if url not in _jwk_clients:
-        _jwk_clients[url] = jwt.PyJWKClient(url, cache_keys=True)
+        _jwk_clients[url] = jwt.PyJWKClient(url, cache_keys=True, timeout=3)
     return _jwk_clients[url]
 
 
@@ -31,7 +31,14 @@ def current_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) 
             algorithms=["ES256"],
             audience="authenticated",
             issuer=env("SUPABASE_JWT_ISSUER"),
+            leeway=30,
+            options={"require": ["exp", "aud", "iss", "sub"]},
         )
+    except jwt.PyJWKClientConnectionError as e:
+        # JWKS endpoint unreachable is our outage, not the caller's bad token.
+        raise api_error(
+            503, "service_unavailable", "auth keys unavailable", headers={"Retry-After": "5"}
+        ) from e
     except jwt.PyJWTError as e:
         raise api_error(
             401,

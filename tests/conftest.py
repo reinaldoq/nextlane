@@ -57,7 +57,19 @@ def clean_tables():
 
 @pytest.fixture()
 def make_token(ec_key, jwks_server):
-    def _make(sub="11111111-1111-1111-1111-111111111111", email="reviewer@test.dev", **over):
+    def _make(
+        sub="11111111-1111-1111-1111-111111111111",
+        email="reviewer@test.dev",
+        *,
+        key=None,
+        kid=KID,
+        alg="ES256",
+        **over,
+    ):
+        """Claim overrides via kwargs; a claim overridden to None is OMITTED entirely.
+
+        `key`/`kid`/`alg` let tests forge wrong-key, unknown-kid and alg-confusion tokens.
+        """
         claims = {
             "sub": sub,
             "email": email,
@@ -67,6 +79,8 @@ def make_token(ec_key, jwks_server):
             "exp": int(time.time()) + 3600,
         }
         claims.update(over)
-        return jwt.encode(claims, ec_key, algorithm="ES256", headers={"kid": KID})
+        claims = {k: v for k, v in claims.items() if v is not None}
+        signing_key = key if key is not None else ec_key
+        return jwt.encode(claims, signing_key, algorithm=alg, headers={"kid": kid})
 
     return _make
