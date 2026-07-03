@@ -17,3 +17,5 @@ gate: lint test
     npm --prefix web run build
 seed:
     supabase db reset
+pin-api:
+    uv export --no-dev --no-hashes --no-emit-project --format requirements-txt -o api/requirements.txt
