@@ -14,6 +14,16 @@ Timestamp discipline: `datetime.now(UTC)` is called in exactly ONE place,
 `RunRecord.new`, so every record's clock read happens the same way and
 tests can stamp their own `ts_iso` deterministically without touching the
 wall clock at all.
+
+Portability (Task 10): `transcript_paths` are absolute local paths as built
+by the loop (`<repo_root>/.worktrees/<slug>/.rails-transcripts/...`) -- fine
+in memory for an operator tailing a live session, but a committed journal
+line with an absolute path leaks a local username and isn't portable.
+`record()` relativizes each transcript path to `repo_root` (or its
+git-derived default) at write time, leaving the in-memory `RunRecord`
+untouched; `from_row`/`load()` don't care either way, since they just parse
+whatever string is on disk (old, pre-Task-10 lines stay absolute and still
+load fine).
 """
 
 from __future__ import annotations
@@ -153,27 +163,65 @@ class RunRecord:
         )
 
 
-def _default_journal_path() -> Path:
-    # Resolved lazily (only when a caller doesn't pass journal_path) so
+def _default_repo_root() -> Path:
+    # Resolved lazily (only when a caller doesn't pass repo_root) so
     # importing this module never shells out to git -- see RailsConfig.load.
     from rails.config import RailsConfig
 
-    return RailsConfig.load().repo_root / "rails" / "journal" / "runs.jsonl"
+    return RailsConfig.load().repo_root
 
 
-def record(run: RunRecord, *, journal_path: Path | None = None) -> None:
+def _default_journal_path() -> Path:
+    return _default_repo_root() / "rails" / "journal" / "runs.jsonl"
+
+
+def _relativize_transcript_path(path_str: str, repo_root: Path) -> str:
+    """Rewrite `path_str` relative to `repo_root` when possible.
+
+    A path already relative, or an absolute path that doesn't live under
+    `repo_root` (e.g. a fixture path or a transcript from outside this
+    checkout), is returned unchanged -- this is a best-effort portability
+    scrub for committed evidence (Task 10), not a strict contract.
+    """
+    path = Path(path_str)
+    if not path.is_absolute():
+        return path_str
+    try:
+        return str(path.relative_to(repo_root))
+    except ValueError:
+        return path_str
+
+
+def record(
+    run: RunRecord, *, journal_path: Path | None = None, repo_root: Path | None = None
+) -> None:
     """Append `run` as one JSON line to `journal_path`.
 
     Creates the parent directory if it doesn't exist yet. Defaults to
     `<repo_root>/rails/journal/runs.jsonl` when `journal_path` is omitted.
+
+    `transcript_paths` are written repo-root-relative (see
+    `_relativize_transcript_path`) so a committed journal never leaks an
+    absolute local path (e.g. a username in `/Users/<name>/...`) -- the
+    RunRecord object `run` itself is never mutated, only the JSON line
+    written to disk. `repo_root` defaults (lazily, only when there's at
+    least one transcript path to relativize) to the same git-derived root
+    the rest of rails uses (`RailsConfig.load().repo_root`); pass it
+    explicitly for a deterministic, git-free test.
     """
     path = journal_path if journal_path is not None else _default_journal_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    row = dataclasses.asdict(run)
+    if row["transcript_paths"]:
+        root = repo_root if repo_root is not None else _default_repo_root()
+        row["transcript_paths"] = [
+            _relativize_transcript_path(p, root) for p in row["transcript_paths"]
+        ]
     with path.open("a", encoding="utf-8") as fh:
         # ensure_ascii=False: the journal is committed as human-readable
         # evidence (Task 9) -- accents/emoji in a task_summary or PR title
         # stay legible instead of turning into \uXXXX escapes.
-        fh.write(json.dumps(dataclasses.asdict(run), ensure_ascii=False) + "\n")
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def load(journal_path: Path | None = None) -> list[RunRecord]:

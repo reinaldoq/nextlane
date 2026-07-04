@@ -60,4 +60,65 @@ worth knowing before touching it.
 
 ## AI rails
 
-Phase 2 — day-2 agent tooling lives in `rails/` (coming).
+`rails/` is a vendor-agnostic **day-2 agent runner**: Claude, Codex, or
+Gemini can extend this app through the exact same protected gate a human
+uses — a PR against branch-protected `main`, lint + tests + e2e all green.
+Sessions run on subscription coding-agent CLIs (`claude`, `codex`, `gemini`),
+never an API key.
+
+**Four graded artifacts:** agent rules ([`AGENTS.md`](AGENTS.md),
+[`CLAUDE.md`](CLAUDE.md)); reusable skills
+([`.claude/skills/scaffold-module`](.claude/skills/scaffold-module),
+[`.claude/skills/domain-reviewer`](.claude/skills/domain-reviewer)); the
+day-2 agents themselves (`uv run rails build-feature|triage|migrate|review`,
+one Typer CLI over one shared loop in `rails/agents/loop.py`); and the
+eval/verification loop — the deterministic gate (`uv run rails gate`, a
+structured mirror of `just gate`) plus GitHub Actions CI plus branch
+protection, so nothing an agent produces reaches `main` unverified.
+
+```bash
+uv run rails engines                                   # list engines available on PATH
+uv run rails build-feature "add a stats endpoint..." --engine claude --reviewer codex
+uv run rails triage --event <app_events id> --engine codex
+uv run rails migrate "add a discount_cents column..." --engine gemini
+uv run rails review --pr 42 --engine claude --comment
+```
+
+`build-feature` implements a feature end-to-end from a plain-language spec;
+`triage` turns a reported `app_events` row into a reproduction test + fix;
+`migrate` authors and applies a schema change; `review` runs a standalone
+cross-vendor review against an open PR (or `--range`), independent of the
+other three. `--engine` picks the builder (defaults to `RAILS_ENGINE`);
+`--reviewer` picks the cross-vendor reviewer (defaults to the *other* of
+claude/codex; gemini defaults to claude); `--no-pr` runs the full loop but
+stops short of opening a PR, leaving the worktree under `.worktrees/` for
+inspection. **The loop opens a PR only on a green gate and never
+self-merges** — a human always merges.
+
+Each run: an isolated **git worktree** → a headless builder **session** →
+the deterministic **gate** (bounded retries on red) → an independent,
+read-only **cross-vendor review** of the full branch diff (a verdict that
+doesn't parse fails safe to `REQUEST_CHANGES`, never a silent approve) →
+**PR** only once the gate is green. It's observable (timestamped phase
+banners as it runs, a tailable transcript per session under
+`.worktrees/<slug>/.rails-transcripts/`), interruptible, and every run — PR
+opened, gate failed, review rejected, or errored — is journaled to
+[`rails/journal/runs.jsonl`](rails/journal/runs.jsonl).
+
+**Proof it's real:** two cross-vendor dogfood runs have merged through this
+exact loop —
+[#18](https://github.com/reinaldoq/nextlane/pull/18) (Claude built a
+`GET /api/vehicles/stats` endpoint + updated web StatCards to one request;
+Codex reviewed → `APPROVE`) and
+[#19](https://github.com/reinaldoq/nextlane/pull/19) (Codex built a "Clear
+filters" toolbar button + Playwright e2e; Claude reviewed → `APPROVE`), both
+real headless sessions on subscription CLIs with no API keys — see their
+entries (engine, reviewer, verdict, cost) in `rails/journal/runs.jsonl`.
+
+| engine | notes |
+| --- | --- |
+| `claude` | hard `--max-budget-usd` cap; per-session USD cost reported |
+| `codex` | no dollar-budget flag (token counts only); bounded by timeout + sandbox mode |
+| `gemini` | best-effort support; no dollar-budget flag either |
+
+Run `uv run rails engines` to see which are actually on `PATH` for you.
