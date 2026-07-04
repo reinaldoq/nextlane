@@ -83,31 +83,6 @@ def test_engines_one_line_per_engine_even_with_long_paths(monkeypatch):
         assert line.startswith(engine)
 
 
-# --- CLI: stub commands exit 1 with "not implemented" on stderr -----------
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["triage", "last 24h"],
-        ["migrate", "add index on vehicles.vin"],
-        ["review", "--pr", "123"],
-    ],
-)
-def test_stub_commands_exit_1_not_implemented(args):
-    result = runner.invoke(app, args)
-    assert result.exit_code == 1
-    assert "not implemented" in result.stderr.lower()
-
-
-def test_stub_message_goes_to_stderr_not_stdout():
-    result = runner.invoke(app, ["migrate", "add index on vehicles.vin"])
-
-    assert result.exit_code == 1
-    assert "not implemented" in result.stderr.lower()
-    assert result.stdout.strip() == ""
-
-
 # --- CLI: build-feature (wired in Task 6) ------------------------------
 
 
@@ -181,6 +156,218 @@ def test_build_feature_plumbs_engine_reviewer_and_no_pr_flags(monkeypatch):
     assert seen["engine"] == "codex"
     assert seen["reviewer"] == "claude"
     assert seen["open_pr"] is False
+
+
+# --- CLI: triage (wired in Task 8) --------------------------------------
+
+
+def test_triage_help_shows_event_engine_reviewer_no_pr_flags():
+    from typer.main import get_command
+
+    triage_cmd = get_command(app).commands["triage"]
+    opts = {opt for param in triage_cmd.params for opt in getattr(param, "opts", [])}
+    assert {"--event", "--engine", "--reviewer", "--no-pr"} <= opts
+
+
+def test_triage_calls_agent_with_defaults(monkeypatch):
+    seen = {}
+
+    def fake_triage(cfg, *, event_id, engine, reviewer, open_pr):
+        seen["cfg"] = cfg
+        seen["event_id"] = event_id
+        seen["engine"] = engine
+        seen["reviewer"] = reviewer
+        seen["open_pr"] = open_pr
+        return object()
+
+    monkeypatch.setattr("rails.cli._triage", fake_triage)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0
+    assert seen["event_id"] is None
+    assert seen["engine"] is None
+    assert seen["reviewer"] is None
+    assert seen["open_pr"] is True
+
+
+def test_triage_plumbs_event_engine_reviewer_and_no_pr_flags(monkeypatch):
+    seen = {}
+
+    def fake_triage(cfg, *, event_id, engine, reviewer, open_pr):
+        seen["event_id"] = event_id
+        seen["engine"] = engine
+        seen["reviewer"] = reviewer
+        seen["open_pr"] = open_pr
+        return object()
+
+    monkeypatch.setattr("rails.cli._triage", fake_triage)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(
+        app,
+        [
+            "triage",
+            "--event",
+            "abc-123",
+            "--engine",
+            "codex",
+            "--reviewer",
+            "claude",
+            "--no-pr",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen["event_id"] == "abc-123"
+    assert seen["engine"] == "codex"
+    assert seen["reviewer"] == "claude"
+    assert seen["open_pr"] is False
+
+
+def test_triage_exits_one_when_nothing_was_triaged(monkeypatch):
+    monkeypatch.setattr("rails.cli._triage", lambda cfg, **kw: None)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 1
+
+
+# --- CLI: migrate (wired in Task 8) -------------------------------------
+
+
+def test_migrate_help_shows_engine_reviewer_no_pr_flags():
+    from typer.main import get_command
+
+    migrate_cmd = get_command(app).commands["migrate"]
+    opts = {opt for param in migrate_cmd.params for opt in getattr(param, "opts", [])}
+    assert {"--engine", "--reviewer", "--no-pr"} <= opts
+
+
+def test_migrate_calls_agent_with_change_and_defaults(monkeypatch):
+    seen = {}
+
+    def fake_migrate(cfg, change, *, engine, reviewer, open_pr):
+        seen["cfg"] = cfg
+        seen["change"] = change
+        seen["engine"] = engine
+        seen["reviewer"] = reviewer
+        seen["open_pr"] = open_pr
+        return object()
+
+    monkeypatch.setattr("rails.cli._migrate", fake_migrate)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["migrate", "add index on vehicles.vin"])
+
+    assert result.exit_code == 0
+    assert seen["change"] == "add index on vehicles.vin"
+    assert seen["engine"] is None
+    assert seen["reviewer"] is None
+    assert seen["open_pr"] is True
+
+
+def test_migrate_plumbs_engine_reviewer_and_no_pr_flags(monkeypatch):
+    seen = {}
+
+    def fake_migrate(cfg, change, *, engine, reviewer, open_pr):
+        seen["engine"] = engine
+        seen["reviewer"] = reviewer
+        seen["open_pr"] = open_pr
+        return object()
+
+    monkeypatch.setattr("rails.cli._migrate", fake_migrate)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(
+        app,
+        [
+            "migrate",
+            "add index on vehicles.vin",
+            "--engine",
+            "codex",
+            "--reviewer",
+            "claude",
+            "--no-pr",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen["engine"] == "codex"
+    assert seen["reviewer"] == "claude"
+    assert seen["open_pr"] is False
+
+
+# --- CLI: review (wired in Task 8) ---------------------------------------
+
+
+def test_review_help_shows_pr_range_engine_comment_flags():
+    from typer.main import get_command
+
+    review_cmd = get_command(app).commands["review"]
+    opts = {opt for param in review_cmd.params for opt in getattr(param, "opts", [])}
+    assert {"--pr", "--range", "--engine", "--comment"} <= opts
+
+
+def test_review_requires_pr_or_range(monkeypatch):
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["review"])
+
+    assert result.exit_code == 1
+    assert "--pr" in result.stderr or "--range" in result.stderr
+
+
+def test_review_pr_plumbs_flags_and_exits_zero_on_approve(monkeypatch):
+    seen = {}
+
+    def fake_review(cfg, *, pr, diff_range, engine, comment):
+        seen["cfg"] = cfg
+        seen["pr"] = pr
+        seen["diff_range"] = diff_range
+        seen["engine"] = engine
+        seen["comment"] = comment
+        return "APPROVE"
+
+    monkeypatch.setattr("rails.cli._review", fake_review)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["review", "--pr", "42", "--engine", "codex", "--comment"])
+
+    assert result.exit_code == 0
+    assert seen["pr"] == "42"
+    assert seen["diff_range"] is None
+    assert seen["engine"] == "codex"
+    assert seen["comment"] is True
+
+
+def test_review_range_plumbs_flags(monkeypatch):
+    seen = {}
+
+    def fake_review(cfg, *, pr, diff_range, engine, comment):
+        seen["pr"] = pr
+        seen["diff_range"] = diff_range
+        return "APPROVE"
+
+    monkeypatch.setattr("rails.cli._review", fake_review)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["review", "--range", "main..feature"])
+
+    assert result.exit_code == 0
+    assert seen["pr"] is None
+    assert seen["diff_range"] == "main..feature"
+
+
+def test_review_exits_one_on_request_changes(monkeypatch):
+    monkeypatch.setattr("rails.cli._review", lambda cfg, **kw: "REQUEST_CHANGES")
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["review", "--pr", "42"])
+
+    assert result.exit_code == 1
 
 
 # --- CLI: gate ---------------------------------------------------------
