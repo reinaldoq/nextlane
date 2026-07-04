@@ -1,0 +1,4 @@
+{"type":"init","timestamp":"2026-07-03T22:04:25.899Z","session_id":"5bbef0b4-2ad5-4769-a091-9894a5a38d86","model":"auto-gemini-2.5"}
+{"type":"message","timestamp":"2026-07-03T22:04:25.901Z","role":"user","content":"Reply with exactly the word: pong"}
+{"type":"message","timestamp":"2026-07-03T22:04:29.078Z","role":"assistant","content":"pong","delta":true}
+{"type":"result","timestamp":"2026-07-03T22:04:29.080Z","status":"success","stats":{"total_tokens":11121,"input_tokens":10949,"output_tokens":45,"cached":0,"input":10949,"duration_ms":3181,"tool_calls":0}}

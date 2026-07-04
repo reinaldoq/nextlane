@@ -14,3 +14,11 @@ web/e2e/.artifacts/
 .pytest_cache/
 .ruff_cache/
 supabase/.temp/
+# Raw agent-session transcripts (rails runner) -- written under whatever cwd
+# a session ran in, including future worktrees under .worktrees/; ignored at
+# the repo root now so it's covered everywhere without a per-worktree gitignore.
+.rails-transcripts/
+# Scratch git worktrees created by rails/worktree.py for agent task runs
+# (rails/<task_slug>-<shortid> branches, checked out under here). Ephemeral
+# by design -- see rails/worktree.py's worktree_for() cleanup semantics.
+.worktrees/

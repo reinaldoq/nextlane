@@ -1,0 +1,5 @@
+{"type":"init","timestamp":"2026-07-04T08:10:00.736Z","session_id":"98bec3a7-f9a0-43ed-925f-4a6d9c63ffff","model":"auto-gemini-2.5"}
+{"type":"message","timestamp":"2026-07-04T08:10:00.737Z","role":"user","content":"In exactly three short sentences, explain what a dealer management system is."}
+{"type":"message","timestamp":"2026-07-04T08:10:04.442Z","role":"assistant","content":"A dealer management system (DMS) is a software platform designed to help automotive, heavy equipment, or other dealerships manage their entire operations. It integrates various departments","delta":true}
+{"type":"message","timestamp":"2026-07-04T08:10:04.547Z","role":"assistant","content":" like sales, finance, parts, and service into a single system. A DMS streamlines workflows, improves efficiency, and provides comprehensive reporting for better decision-making.","delta":true}
+{"type":"result","timestamp":"2026-07-04T08:10:04.549Z","status":"success","stats":{"total_tokens":11219,"input_tokens":10969,"output_tokens":113,"cached":0,"input":10969,"duration_ms":3813,"tool_calls":0}}
