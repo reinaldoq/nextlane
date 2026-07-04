@@ -227,6 +227,102 @@ def test_multiple_appends_accumulate(tmp_path):
     assert loaded == [run1, run2]
 
 
+# --- transcript_paths portability (Task 10) ----------------------------
+#
+# `transcript_paths` are absolute local paths inside a worktree
+# (`<repo_root>/.worktrees/<slug>/.rails-transcripts/...`) as produced by the
+# loop -- fine as an in-memory RunRecord (an operator tails them live), but a
+# username-bearing absolute path is not portable evidence once the journal is
+# committed. `record()` relativizes any transcript_path that lives under
+# `repo_root` to repo-root-relative when it WRITES the JSON line; it never
+# mutates the RunRecord object passed in.
+
+
+def test_record_stores_transcript_paths_relative_to_repo_root(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    journal_path = repo_root / "rails" / "journal" / "runs.jsonl"
+    abs_path = repo_root / ".worktrees" / "wt-abc123" / ".rails-transcripts" / "session.jsonl"
+    run = RunRecord.new(**_make_kwargs(transcript_paths=[str(abs_path)]))
+
+    record(run, journal_path=journal_path, repo_root=repo_root)
+
+    raw = json.loads(journal_path.read_text(encoding="utf-8").splitlines()[0])
+    assert raw["transcript_paths"] == [".worktrees/wt-abc123/.rails-transcripts/session.jsonl"]
+    # the in-memory RunRecord the caller holds is untouched (still absolute) --
+    # only the persisted JSON line is relativized.
+    assert run.transcript_paths == [str(abs_path)]
+
+
+def test_record_leaves_already_relative_transcript_paths_untouched(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    journal_path = repo_root / "runs.jsonl"
+    run = RunRecord.new(**_make_kwargs(transcript_paths=["already/relative/session.jsonl"]))
+
+    record(run, journal_path=journal_path, repo_root=repo_root)
+
+    raw = json.loads(journal_path.read_text(encoding="utf-8").splitlines()[0])
+    assert raw["transcript_paths"] == ["already/relative/session.jsonl"]
+
+
+def test_record_leaves_paths_outside_repo_root_absolute(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    outside = tmp_path / "elsewhere" / "session.jsonl"
+    journal_path = repo_root / "runs.jsonl"
+    run = RunRecord.new(**_make_kwargs(transcript_paths=[str(outside)]))
+
+    record(run, journal_path=journal_path, repo_root=repo_root)
+
+    raw = json.loads(journal_path.read_text(encoding="utf-8").splitlines()[0])
+    assert raw["transcript_paths"] == [str(outside)]
+
+
+def test_record_relativizes_multiple_transcript_paths(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    journal_path = repo_root / "runs.jsonl"
+    p1 = repo_root / ".worktrees" / "wt" / "builder.jsonl"
+    p2 = repo_root / ".worktrees" / "wt" / "review.jsonl"
+    run = RunRecord.new(**_make_kwargs(transcript_paths=[str(p1), str(p2)]))
+
+    record(run, journal_path=journal_path, repo_root=repo_root)
+
+    raw = json.loads(journal_path.read_text(encoding="utf-8").splitlines()[0])
+    assert raw["transcript_paths"] == [
+        ".worktrees/wt/builder.jsonl",
+        ".worktrees/wt/review.jsonl",
+    ]
+
+
+def test_record_then_load_round_trips_relative_transcript_paths(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    journal_path = repo_root / "runs.jsonl"
+    abs_path = repo_root / ".worktrees" / "wt" / "session.jsonl"
+    run = RunRecord.new(**_make_kwargs(transcript_paths=[str(abs_path)]))
+
+    record(run, journal_path=journal_path, repo_root=repo_root)
+    loaded = load(journal_path)
+
+    assert loaded[0].transcript_paths == [".worktrees/wt/session.jsonl"]
+    # every other field still round-trips exactly, only transcript_paths differs.
+    assert loaded[0] == dataclasses.replace(run, transcript_paths=[".worktrees/wt/session.jsonl"])
+
+
+def test_record_without_repo_root_leaves_empty_transcript_paths_untouched(tmp_path):
+    """No transcript_paths to relativize -- record() must not need (and
+    therefore never require) a repo_root in that case."""
+    journal_path = tmp_path / "runs.jsonl"
+    run = RunRecord.new(**_make_kwargs())
+
+    record(run, journal_path=journal_path)  # no repo_root passed
+    loaded = load(journal_path)
+
+    assert loaded == [run]
+
+
 def test_load_missing_file_returns_empty_list(tmp_path):
     journal_path = tmp_path / "does-not-exist" / "runs.jsonl"
 
