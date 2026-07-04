@@ -44,6 +44,7 @@ def test_401_without_token_on_every_route(db_client: TestClient):
     vid = "00000000-0000-0000-0000-000000000000"
     requests = [
         ("GET", "/api/vehicles", None),
+        ("GET", "/api/vehicles/stats", None),
         ("POST", "/api/vehicles", vehicle_body()),
         ("GET", f"/api/vehicles/{vid}", None),
         ("PATCH", f"/api/vehicles/{vid}", {"price_cents": 1}),
@@ -54,6 +55,51 @@ def test_401_without_token_on_every_route(db_client: TestClient):
         r = db_client.request(method, path, json=body)
         assert r.status_code == 401, f"{method} {path} -> {r.status_code}"
         assert r.json()["code"] == "unauthenticated"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/vehicles/stats
+# ---------------------------------------------------------------------------
+
+
+def test_stats_empty_table_returns_all_zeroes(db_client: TestClient, auth_headers: dict):
+    r = db_client.get("/api/vehicles/stats", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json() == {"available": 0, "reserved": 0, "sold": 0, "total": 0}
+
+
+def test_stats_counts_by_status(db_client: TestClient, auth_headers: dict):
+    # 4 created (all default to available), then move some through transitions.
+    reserved = create_vehicle(db_client, auth_headers)
+    sold = create_vehicle(db_client, auth_headers)
+    create_vehicle(db_client, auth_headers)
+    create_vehicle(db_client, auth_headers)
+
+    r = db_client.post(
+        f"/api/vehicles/{reserved['id']}/status", json={"status": "reserved"}, headers=auth_headers
+    )
+    assert r.status_code == 200
+    r = db_client.post(
+        f"/api/vehicles/{sold['id']}/status", json={"status": "sold"}, headers=auth_headers
+    )
+    assert r.status_code == 200
+
+    r = db_client.get("/api/vehicles/stats", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json() == {"available": 2, "reserved": 1, "sold": 1, "total": 4}
+
+
+def test_stats_counts_are_ints(db_client: TestClient, auth_headers: dict):
+    create_vehicle(db_client, auth_headers)
+    body = db_client.get("/api/vehicles/stats", headers=auth_headers).json()
+    assert all(isinstance(v, int) for v in body.values())
+
+
+def test_stats_not_shadowed_by_id_route(db_client: TestClient, auth_headers: dict):
+    # /vehicles/stats must resolve to the stats endpoint, not be parsed as a
+    # {vehicle_id} uuid (which would 422). Route order is load-bearing.
+    r = db_client.get("/api/vehicles/stats", headers=auth_headers)
+    assert r.status_code == 200
 
 
 # ---------------------------------------------------------------------------

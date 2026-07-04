@@ -138,6 +138,24 @@ def create_vehicle(body: VehicleIn):
     return row
 
 
+# Declared before GET /vehicles/{vehicle_id} so the literal "stats" segment
+# wins the match instead of being parsed as a (malformed) uuid path param.
+@router.get("/vehicles/stats")
+def vehicle_stats():
+    # One pass over the table: FILTER aggregates yield every status count plus
+    # the grand total in a single query, never one COUNT per status.
+    sql = (
+        "SELECT "
+        "count(*) FILTER (WHERE status = 'available') AS available, "
+        "count(*) FILTER (WHERE status = 'reserved') AS reserved, "
+        "count(*) FILTER (WHERE status = 'sold') AS sold, "
+        "count(*) AS total "
+        "FROM vehicles"
+    )
+    with pool().connection() as conn:
+        return conn.execute(sql).fetchone()
+
+
 @router.get("/vehicles/{vehicle_id}")
 def get_vehicle(vehicle_id: uuid.UUID):
     with pool().connection() as conn:

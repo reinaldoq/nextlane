@@ -129,3 +129,11 @@ export interface ListResponse<T> {
   items: T[]
   total: number
 }
+
+/** Vehicle counts by status plus the grand total, from GET /api/vehicles/stats. */
+export interface VehicleStats {
+  available: number
+  reserved: number
+  sold: number
+  total: number
+}
