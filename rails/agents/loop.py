@@ -101,6 +101,41 @@ two halves.
     and a `SessionError` inside it is caught and swallowed (logged as a
     warning, `proposed_learnings=[]`) rather than failing a run whose PR is
     otherwise ready to open.
+
+Enforced reproduce-then-fix (`enforce_repro=True`, `triage` only -- see
+`rails.agents.triage`): turns "reproduce the bug first" from an instruction
+the agent may or may not follow into a MACHINE-CHECKED proof, per TDFlow
+(EACL 2026), which frames bug-fixing as "obtain a failing reproduction test,
+then make it pass" and finds writing that failing test is the actual
+bottleneck. When set, two extra phases run inside the SAME worktree BEFORE
+the normal build flow:
+  - PHASE 1 (RED): `compose_repro` asks the builder for ONLY a new failing
+    test, no fix. The session runs, any uncommitted work is auto-committed
+    (so the diff genuinely reflects it), then the FULL gate runs and its
+    structured `pytest` StepResult (`_pytest_step`) -- never the session's
+    own claim -- is inspected. Reproduction requires BOTH: the pytest step
+    actually failed, AND the branch's diff genuinely touches a file under
+    `tests/` or `web/e2e/` (`_touches_tests`) -- a gate that's red for an
+    unrelated reason (a stray lint break) is not proof of anything. Bounded
+    to `_MAX_PHASE1_REPRO_ATTEMPTS` tries (one retry, re-prompted to try
+    again) before giving up. Failure to reproduce -- most likely the report
+    doesn't describe a real bug -- journals outcome="cannot_reproduce" and
+    stops: no fix is attempted, no review runs, no PR opens.
+  - PHASE 2 (GREEN): once phase 1 proves the bug, `compose_fix` asks the
+    builder to fix the non-test code so the SAME reproduction test passes,
+    without weakening or deleting it. This becomes `original_prompt` for the
+    existing build+retry loop below (reused byte-for-byte -- see the `while`
+    loop after this docstring's build step), so it inherits the exact same
+    bounded-retry/gate-green semantics `build-feature` already has, then
+    falls through to the unmodified review -> PR flow.
+`repro_confirmed`/`repro_evidence` on the journaled `RunRecord` are the
+proof artifact: `repro_confirmed` is True ONLY once BOTH phases genuinely
+succeeded (a phase-2 gate that never turns green -- an ordinary
+outcome="gate_failed" -- leaves it False even though phase 1 succeeded,
+since the red->green PROOF never completed), and the PR body surfaces the
+same proof for the human merging it. `build-feature`/`migrate`/`review`
+never set `enforce_repro` (defaults False), so their flow is byte-identical
+to before this feature existed.
 """
 
 from __future__ import annotations
@@ -122,11 +157,18 @@ from rails import github, mission_control
 from rails.adapters import get_adapter
 from rails.adapters.base import SessionError, SessionResult
 from rails.config import RailsConfig
-from rails.gate import GateResult, run_gate
+from rails.gate import GateResult, StepResult, run_gate
 from rails.github import GitHubError
 from rails.journal import RunRecord
 from rails.journal import record as journal_record
-from rails.prompts import compose, compose_retro, compose_retry, compose_review
+from rails.prompts import (
+    compose,
+    compose_fix,
+    compose_repro,
+    compose_retro,
+    compose_retry,
+    compose_review,
+)
 from rails.worktree import cleanup, worktree_for
 
 console = Console()
@@ -146,6 +188,12 @@ _DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres
 # retries + a review + one revision, each capable of a long headless session,
 # must still be bounded so a wedged run can't burn quota indefinitely.
 _DEFAULT_TOTAL_TIMEOUT_S = 5400
+
+# Enforced reproduce-then-fix (TDFlow, EACL 2026): phase 1's reproduction
+# attempt is bounded to this many tries -- one initial attempt plus exactly
+# ONE retry, never unbounded -- before concluding the reported bug could not
+# be reproduced (see `run_agent_task`'s `enforce_repro`).
+_MAX_PHASE1_REPRO_ATTEMPTS = 2
 
 # Derived from docs/superpowers/agents-md-seed.md's conventions (Task 7
 # formalizes these into AGENTS.md proper; this is the concise inline version
@@ -295,6 +343,38 @@ def _has_uncommitted_changes(wt_path: Path) -> bool:
     return bool(result.stdout.strip())
 
 
+def _touches_tests(wt_path: Path, *, base: str = "main") -> bool:
+    """Whether the branch's diff since `base` touches anything under
+    `tests/` or `web/e2e/` (`git diff --name-only base...HEAD`, mirroring
+    `_diff`'s three-dot range). Enforced reproduce-then-fix's phase 1
+    (`run_agent_task`'s `enforce_repro`) uses this as its second guard: a
+    gate whose `pytest` step happens to be red is NOT proof of a genuine
+    reproduction unless the session actually added/changed a test file --
+    an unrelated lint break or a stale gate result must never be mistaken
+    for "the bug was reproduced"."""
+    result = subprocess.run(
+        ["git", "-C", str(wt_path), "diff", "--name-only", f"{base}...HEAD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    paths = result.stdout.splitlines()
+    return any(p.startswith("tests/") or p.startswith("web/e2e/") for p in paths)
+
+
+def _pytest_step(gate_result: GateResult) -> StepResult | None:
+    """The gate's `pytest` StepResult, or `None` if this GateResult's steps
+    don't include one. Enforced reproduce-then-fix's phase 1 needs the
+    PYTEST step specifically (not the gate's overall `ok`) -- a reproduction
+    gate is expected to have pytest red while every other step may still be
+    green, so `GateResult.ok` (which is False the moment ANY step fails)
+    can't distinguish "the reproduction worked" from "something unrelated
+    also broke"."""
+    return next((step for step in gate_result.steps if step.name == "pytest"), None)
+
+
 def _read_learnings(repo_root: Path) -> str | None:
     """Read `<repo_root>/rails/LEARNINGS.md` -- the self-improvement
     flywheel's forward channel (see the module docstring and
@@ -436,6 +516,24 @@ Reviewer feedback:
 """
 
 
+def _compose_repro_retry(repro_prompt: str) -> str:
+    """Enforced reproduce-then-fix's ONE bounded phase-1 retry (see the
+    module docstring): the previous attempt didn't actually reproduce the
+    bug -- either its test passed against current code, or it made no
+    test-file change at all. Reuses the phase-1 framing verbatim (mirrors
+    `compose_retry`'s "recompose from the ORIGINAL, not nested" discipline)
+    plus one instruction sentence; never nests across more than this single
+    retry since phase 1 is capped at `_MAX_PHASE1_REPRO_ATTEMPTS` tries."""
+    return f"""{repro_prompt}
+
+---
+
+Your test passed -- it doesn't reproduce the bug (or you made no test change
+at all). Write ONE test that actually FAILS against the current code,
+demonstrating the reported bug. Do not change any non-test code.
+"""
+
+
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -468,6 +566,7 @@ def run_agent_task(
     max_retries: int = 2,
     open_pr: bool = True,
     retro: bool = True,
+    enforce_repro: bool = False,
     total_timeout_s: int = _DEFAULT_TOTAL_TIMEOUT_S,
     # injected collaborators (default to real; tests pass fakes):
     make_adapter=get_adapter,
@@ -497,6 +596,15 @@ def run_agent_task(
     flywheel" section for the full contract (never auto-written, bounded to
     one session, failure-isolated). `--no-retro` on `build-feature` threads
     through to this flag.
+
+    `enforce_repro` (default False; `triage` passes True -- see the module
+    docstring's "Enforced reproduce-then-fix" section): inserts a bounded
+    reproduce-then-fix protocol BEFORE the normal build flow, requiring the
+    gate's own `pytest` step to genuinely fail (proving the bug) before any
+    fix is attempted, then requiring the full gate to genuinely pass
+    (proving the fix) -- both machine-checked, never trusted claims. A
+    failure to reproduce ends the run as outcome="cannot_reproduce" (no fix,
+    no review, no PR). `build-feature`/`migrate`/`review` never set this.
     """
     start = time.monotonic()
     deadline = start + total_timeout_s
@@ -515,6 +623,14 @@ def run_agent_task(
     retries = 0
     review_verdict: str | None = None
     proposed_learnings: list[str] = []
+    # Enforced reproduce-then-fix (enforce_repro=True; see module docstring):
+    # both start False/None and are promoted only once phase 2's gate is
+    # confirmed green -- every terminal outcome journaled before that point
+    # (including "cannot_reproduce" itself, and an ordinary "gate_failed" if
+    # phase 2 never turns green) keeps repro_confirmed=False, since the
+    # red->green PROOF never actually completed.
+    repro_confirmed = False
+    repro_evidence: str | None = None
 
     with worktree_cm(slug_from(title), repo_root=cfg.repo_root) as wt:
         transcript_dir = wt.path / ".rails-transcripts"
@@ -557,6 +673,8 @@ def run_agent_task(
                 transcript_paths=paths,
                 review_verdict=review_verdict,
                 proposed_learnings=proposed_learnings,
+                repro_confirmed=repro_confirmed,
+                repro_evidence=repro_evidence,
             )
             _mc_finish(
                 run_id,
@@ -683,24 +801,117 @@ def run_agent_task(
         _phase(f"transcripts under {transcript_dir} (tail -f to follow the live session)")
         _mc_step(run_id, next(mc_seq), "worktree", "ok", f"branch {wt.branch} at {wt.path}")
 
-        # --- build ---
         # Self-improvement flywheel, forward channel: inject the committed,
         # human-curated rails/LEARNINGS.md (if any) into the ORIGINAL prompt
         # -- retries/revisions below recompose FROM this same original_prompt
         # (see M1), so accumulated lessons ride along into every session of
         # this run without being re-read or re-injected each time.
         learnings = _read_learnings(cfg.repo_root)
-        original_prompt = compose(
-            task_kind, task_body, engine_label=f"{engine} (rails)", learnings=learnings
-        )
+
+        # --- enforced reproduce-then-fix, PHASE 1 (RED) -- see the module
+        # docstring's "Enforced reproduce-then-fix" section. Runs BEFORE the
+        # normal build step below, in the SAME worktree, only when the
+        # caller (`triage`) opted in via `enforce_repro=True`.
+        if enforce_repro:
+            _phase("▶ phase 1: reproduce (assert failing test) …")
+            repro_prompt = compose_repro(
+                task_kind, task_body, engine_label=f"{engine} (rails)", learnings=learnings
+            )
+            reproduced = False
+            pytest_step: StepResult | None = None
+            added_test = False
+            for attempt in range(1, _MAX_PHASE1_REPRO_ATTEMPTS + 1):
+                label = (
+                    "reproduction session" if attempt == 1 else f"reproduction retry {attempt - 1}"
+                )
+                sessions.append(_run_session(builder, repro_prompt, label=label, gate_ok=False))
+                # Auto-commit BEFORE the gate/diff checks below (unlike the
+                # build flow's own rescue, which only runs once the gate is
+                # ALREADY green): both the pytest-red check and
+                # `_touches_tests` need the new test file to actually be
+                # part of the branch's committed diff, and a headless
+                # session frequently forgets to commit at all (the same Task
+                # 9 dogfood failure mode, just guarded proactively here).
+                if _has_uncommitted_changes(wt.path):
+                    _phase("▶ auto-committing uncommitted phase-1 session work")
+                    _auto_commit(
+                        wt.path,
+                        message=(
+                            f"test: reproduce -- {title}\n\n"
+                            f"Failing reproduction test written by the {engine} builder "
+                            "session (phase 1 of the enforced reproduce-then-fix protocol) "
+                            "and auto-committed by nextlane-rails because the session left "
+                            f"it uncommitted.\n\nCo-Authored-By: {engine} via nextlane-rails "
+                            "<noreply@nextlane.dev>"
+                        ),
+                    )
+                    _mc_step(
+                        run_id,
+                        next(mc_seq),
+                        "commit",
+                        "ok",
+                        "auto-committed phase-1 reproduction test",
+                    )
+                phase1_gate = _gate(False)
+                pytest_step = _pytest_step(phase1_gate)
+                added_test = _touches_tests(wt.path)
+                reproduced = pytest_step is not None and not pytest_step.ok and added_test
+                if reproduced or attempt >= _MAX_PHASE1_REPRO_ATTEMPTS:
+                    break
+                _phase(
+                    "[yellow]retrying phase 1 (bounded to one retry) -- the reported bug "
+                    "was not reproduced yet[/yellow]"
+                )
+                repro_prompt = _compose_repro_retry(repro_prompt)
+
+            if not reproduced:
+                if pytest_step is not None and pytest_step.ok:
+                    message = (
+                        "the reproduction test passed without any fix — could not "
+                        "reproduce the reported bug; not opening a PR"
+                    )
+                elif not added_test:
+                    message = (
+                        "phase 1 made no test-file change under tests/ or web/e2e/ — "
+                        "could not reproduce the reported bug; not opening a PR"
+                    )
+                else:
+                    message = (
+                        "the gate's pytest step could not be evaluated — could not "
+                        "reproduce the reported bug; not opening a PR"
+                    )
+                _phase(f"[bold yellow]✗ {message}[/bold yellow]")
+                _record(gate_ok=False, pr_url=None, outcome="cannot_reproduce")
+                raise typer.Exit(1)
+
+            _phase(f"[green]✓ bug reproduced — pytest red[/green] (attempt {attempt})")
+            _phase("▶ phase 2: fix (assert green) …")
+            original_prompt = compose_fix(
+                task_kind, task_body, engine_label=f"{engine} (rails)", learnings=learnings
+            )
+        else:
+            original_prompt = compose(
+                task_kind, task_body, engine_label=f"{engine} (rails)", learnings=learnings
+            )
+
+        # --- build (PHASE 2 "fix" when enforce_repro; the ordinary, only
+        # build step otherwise) ---
         sessions.append(
-            _run_session(builder, original_prompt, label="builder session", gate_ok=False)
+            _run_session(
+                builder,
+                original_prompt,
+                label="fix session" if enforce_repro else "builder session",
+                gate_ok=False,
+            )
         )
         gate_result = _gate(False)
 
         # --- retries: recompose from the ORIGINAL prompt each time + the
         # LATEST gate summary (M1) -- NOT from the previous retry prompt,
         # which would accumulate stale gate tails and duplicate instructions.
+        # Unmodified by enforce_repro: phase 2 reuses this exact bounded
+        # retry loop (the "must be GREEN" half of the reproduce-then-fix
+        # proof), just seeded from compose_fix's prompt instead of compose's.
         while not gate_result.ok and retries < max_retries:
             retry_prompt = compose_retry(original_prompt, gate_result.summary())
             sessions.append(
@@ -717,15 +928,34 @@ def run_agent_task(
             err_console.print(gate_result.summary())
             raise typer.Exit(1)
 
+        if enforce_repro:
+            # The full red->green PROOF: phase 1 above already confirmed the
+            # gate's pytest step failed (RED); the retry loop just above
+            # confirmed the FULL gate is now green (GREEN). Both halves
+            # machine-checked -- never a trusted claim from either session.
+            repro_confirmed = True
+            repro_evidence = (
+                f"pytest RED at phase 1 (confirmed on attempt {attempt} of "
+                f"{_MAX_PHASE1_REPRO_ATTEMPTS}), GREEN after fix (phase 2: {retries} "
+                "retry attempt(s))"
+            )
+            _phase(f"[green]✓ enforced reproduce-then-fix confirmed:[/green] {repro_evidence}")
+
         # --- auto-commit rescue: a green gate proves the session's edits are
         # valid, but headless coding agents frequently forget to `git
         # commit` even though they left real work in the worktree (the Task
-        # 9 dogfood bug this guards against). Only trigger when the branch
-        # truly has zero commits AND there is uncommitted content to rescue
-        # -- an agent that already committed its own work must never take
-        # this path (the `and` short-circuits before `_has_uncommitted_changes`
-        # even runs).
-        if _count_commits(wt.path) == 0 and _has_uncommitted_changes(wt.path):
+        # 9 dogfood bug this guards against). Triggers when the branch truly
+        # has zero commits AND there is uncommitted content to rescue -- OR,
+        # for enforce_repro, unconditionally on any leftover dirty state:
+        # phase 1 above already committed the reproduction test, so
+        # `_count_commits == 0` would never be true again by the time phase
+        # 2 finishes even if phase 2's OWN fix session forgot to commit (the
+        # exact same dogfood failure mode, just on the run's second session
+        # instead of its first). An agent that already committed its own
+        # work and left the tree clean is untouched either way
+        # (`_has_uncommitted_changes` is False, short-circuiting this whole
+        # check regardless of `enforce_repro`).
+        if (_count_commits(wt.path) == 0 or enforce_repro) and _has_uncommitted_changes(wt.path):
             _phase("▶ auto-committing uncommitted session work (agent left it uncommitted)")
             commit_message = (
                 f"{title}\n\n"
@@ -844,6 +1074,18 @@ def run_agent_task(
             engine_label=f"{engine} (rails)",
             journal_note=journal_note,
         )
+        if repro_confirmed:
+            # The proof, surfaced for the human merging this PR (see the
+            # module docstring's "Enforced reproduce-then-fix" section):
+            # both halves of the red->green cycle were machine-checked via
+            # the gate's own structured pytest result, never a trusted claim
+            # from either builder session.
+            body = (
+                f"{body}\n\n"
+                "✓ **Enforced reproduce-then-fix**: a reproduction test failed before the "
+                "fix (bug confirmed) and passes after (fix verified).\n"
+                f"{repro_evidence}"
+            )
         if proposed_learnings:
             # Human-gated: PROPOSE only, in the PR body a reviewer reads --
             # never auto-write rails/LEARNINGS.md itself.

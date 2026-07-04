@@ -43,6 +43,12 @@ from pathlib import Path
 #: on the branch -- nothing to review or open a PR for.
 #: "timeout" (Task 6): the whole-run wall-clock budget was exhausted before
 #: the run finished.
+#: "cannot_reproduce" (enforced reproduce-then-fix): `run_agent_task`'s
+#: `enforce_repro=True` phase 1 never got the gate's pytest step to actually
+#: FAIL against current code (even after its one bounded retry), or the
+#: session made no test-file change at all -- the reported bug could not be
+#: reproduced (most likely not a real bug, or a non-existent feature), so
+#: the run stops here: no fix is attempted, no review runs, no PR opens.
 VALID_OUTCOMES = frozenset(
     {
         "pr_opened",
@@ -52,6 +58,7 @@ VALID_OUTCOMES = frozenset(
         "completed_no_pr",
         "no_changes",
         "timeout",
+        "cannot_reproduce",
     }
 )
 
@@ -68,7 +75,9 @@ class RunRecord:
         so both old and new code read each other's rows.
     Bump it whenever the set of fields changes in a way readers must know
     about. Bumped to 2 in Task 6 for `transcript_paths` / `review_verdict`;
-    bumped to 3 for the self-improvement flywheel's `proposed_learnings`.
+    bumped to 3 for the self-improvement flywheel's `proposed_learnings`;
+    bumped to 4 for the enforced reproduce-then-fix protocol's
+    `repro_confirmed` / `repro_evidence`.
     """
 
     ts_iso: str
@@ -94,7 +103,19 @@ class RunRecord:
     # genuinely had nothing generalizable to propose (see
     # rails.agents.loop.run_agent_task).
     proposed_learnings: list[str] = field(default_factory=list)
-    schema_version: int = 3
+    # Enforced reproduce-then-fix (TDFlow-style verification, see
+    # rails.agents.loop.run_agent_task's `enforce_repro`): `repro_confirmed`
+    # is True ONLY when phase 1's reproduction test made the gate's pytest
+    # step genuinely FAIL and phase 2's fix then made the FULL gate GREEN --
+    # a machine-checked proof, never a trusted claim. `repro_evidence` is a
+    # short human-readable summary of that proof (e.g. "pytest RED at phase
+    # 1 (1 attempt), GREEN after fix (0 retries)"). Both stay at their
+    # defaults for every run that didn't opt into `enforce_repro=True`
+    # (build-feature, migrate, review) and for a `cannot_reproduce` run
+    # (the proof never completed).
+    repro_confirmed: bool = False
+    repro_evidence: str | None = None
+    schema_version: int = 4
 
     def __post_init__(self) -> None:
         if self.outcome not in VALID_OUTCOMES:
@@ -143,6 +164,8 @@ class RunRecord:
         transcript_paths: list[str] | None = None,
         review_verdict: str | None = None,
         proposed_learnings: list[str] | None = None,
+        repro_confirmed: bool = False,
+        repro_evidence: str | None = None,
     ) -> RunRecord:
         """Build a RunRecord, stamping `ts_iso` with the current UTC time.
 
@@ -170,6 +193,8 @@ class RunRecord:
             transcript_paths=transcript_paths if transcript_paths is not None else [],
             review_verdict=review_verdict,
             proposed_learnings=proposed_learnings if proposed_learnings is not None else [],
+            repro_confirmed=repro_confirmed,
+            repro_evidence=repro_evidence,
         )
 
 

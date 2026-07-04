@@ -186,6 +186,19 @@ never auto-written to `rails/LEARNINGS.md` itself. A human decides whether
 to fold a proposal into the file when reviewing/merging. `--no-retro` skips
 the retro session for a given run.
 
+### Enforced reproduce-then-fix
+
+`triage` no longer takes an agent's word that a bug is fixed. Before any fix
+is attempted, a phase-1 session must write a test that the harness's own
+gate RUNS and confirms genuinely FAILS against current code (a
+machine-checked reproduction, not a trusted claim) -- bounded to one retry
+before concluding the report can't be reproduced (`outcome:
+cannot_reproduce`, no fix, no review, no PR). Only then does phase 2 fix the
+code until the full gate is green again, keeping the reproduction test as a
+permanent regression test. See
+[`docs/design-rationale.md`](docs/design-rationale.md) for the research
+this is grounded in (TDFlow, EACL 2026).
+
 ## Security rules for agents
 
 - Work only inside your assigned git worktree. Never push, never merge,
