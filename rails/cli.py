@@ -1,11 +1,10 @@
 """Typer CLI skeleton for the rails runner.
 
 Task 1 scope: the full command surface (build-feature, triage, migrate,
-review, gate, engines) plus a working `engines` command. The other commands
-are stubs -- they raise typer.Exit(1) after printing "not implemented" --
-until their owning tasks (2-6) wire them to the real orchestration loop.
-`gate` is deliberately stubbed here too: the plan wires `rails gate` in a
-later task even though the underlying gate runner lands in Task 4.
+review, gate, engines) plus a working `engines` command. `gate` was wired in
+Task 4 once rails/gate.py landed. The remaining commands are stubs -- they
+raise typer.Exit(1) after printing "not implemented" -- until their owning
+tasks (5-6) wire them to the real orchestration loop.
 """
 
 from __future__ import annotations
@@ -14,6 +13,9 @@ import shutil
 
 import typer
 from rich.console import Console
+
+from rails.config import RailsConfig
+from rails.gate import run_gate
 
 app = typer.Typer(
     name="rails",
@@ -65,8 +67,13 @@ def review(
 
 @app.command()
 def gate() -> None:
-    """Run the deterministic gate (lint/test/build) standalone."""
-    _not_implemented()
+    """Run the deterministic gate (lint/test/build) standalone, in the
+    current repo root -- a local mirror of `just gate`, but with the
+    structured per-step summary rails' agent loop (Task 6) also consumes."""
+    cfg = RailsConfig.load()
+    result = run_gate(cfg.repo_root)
+    typer.echo(result.summary())
+    raise typer.Exit(0 if result.ok else 1)
 
 
 @app.command()

@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 
 from rails.cli import ENGINES, app
 from rails.config import RailsConfig, RailsConfigError
+from rails.gate import GateResult, StepResult
 
 runner = CliRunner()
 
@@ -92,7 +93,6 @@ def test_engines_one_line_per_engine_even_with_long_paths(monkeypatch):
         ["triage", "last 24h"],
         ["migrate", "add index on vehicles.vin"],
         ["review", "--pr", "123"],
-        ["gate"],
     ],
 )
 def test_stub_commands_exit_1_not_implemented(args):
@@ -102,11 +102,64 @@ def test_stub_commands_exit_1_not_implemented(args):
 
 
 def test_stub_message_goes_to_stderr_not_stdout():
-    result = runner.invoke(app, ["gate"])
+    result = runner.invoke(app, ["migrate", "add index on vehicles.vin"])
 
     assert result.exit_code == 1
     assert "not implemented" in result.stderr.lower()
     assert result.stdout.strip() == ""
+
+
+# --- CLI: gate ---------------------------------------------------------
+
+
+def test_gate_command_prints_summary_and_exits_zero_on_pass(monkeypatch):
+    fake_result = GateResult(
+        ok=True,
+        steps=(
+            StepResult(name="ruff-check", ok=True, exit_code=0, duration_s=0.1, output_tail=""),
+        ),
+    )
+    monkeypatch.setattr("rails.cli.run_gate", lambda cwd, **kw: fake_result)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["gate"])
+
+    assert result.exit_code == 0
+    assert "ruff-check" in result.stdout
+    assert "✓" in result.stdout
+
+
+def test_gate_command_exits_one_and_prints_failure_tail_on_red_gate(monkeypatch):
+    fake_result = GateResult(
+        ok=False,
+        steps=(
+            StepResult(name="pytest", ok=False, exit_code=1, duration_s=0.2, output_tail="boom"),
+        ),
+    )
+    monkeypatch.setattr("rails.cli.run_gate", lambda cwd, **kw: fake_result)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["gate"])
+
+    assert result.exit_code == 1
+    assert "pytest" in result.stdout
+    assert "boom" in result.stdout
+
+
+def test_gate_command_passes_repo_root_from_config(monkeypatch, tmp_path):
+    seen_cwd = {}
+
+    def fake_run_gate(cwd, **kw):
+        seen_cwd["cwd"] = cwd
+        return GateResult(ok=True, steps=())
+
+    monkeypatch.setattr("rails.cli.run_gate", fake_run_gate)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config(repo_root=tmp_path)))
+
+    result = runner.invoke(app, ["gate"])
+
+    assert result.exit_code == 0
+    assert seen_cwd["cwd"] == tmp_path
 
 
 # --- RailsConfig.load() -----------------------------------------------------
