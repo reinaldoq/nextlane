@@ -1,8 +1,11 @@
+import csv
+import io
 import uuid
 from typing import Literal
 
 import psycopg
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import current_user
@@ -168,6 +171,44 @@ def vehicle_stats():
     )
     with pool().connection() as conn:
         return conn.execute(sql).fetchone()
+
+
+# CSV column order is a stable external contract; price_eur is a display-only
+# derivation of the integer-cents source of truth (cents/100, 2 decimals).
+EXPORT_COLUMNS = ["vin", "make", "model", "year", "price_eur", "mileage_km", "status"]
+
+
+# Declared before GET /vehicles/{vehicle_id} so the literal "export.csv" segment
+# wins the match instead of being parsed as a (malformed) uuid path param.
+@router.get("/vehicles/export.csv")
+def export_vehicles_csv():
+    with pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT vin, make, model, year, price_cents, mileage_km, status "
+            "FROM vehicles ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(EXPORT_COLUMNS)
+    for row in rows:
+        writer.writerow(
+            [
+                row["vin"],
+                row["make"],
+                row["model"],
+                row["year"],
+                f"{row['price_cents'] / 100:.2f}",
+                row["mileage_km"],
+                row["status"],
+            ]
+        )
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="vehicles.csv"'},
+    )
 
 
 @router.get("/vehicles/{vehicle_id}")
