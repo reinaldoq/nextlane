@@ -62,11 +62,26 @@ def _reset_ratelimit():
 @pytest.fixture()
 def clean_tables():
     """NOT autouse here — DB-dependent. Integration modules opt in so
-    pure-unit tests (test_health, test_errors) never touch Postgres."""
+    pure-unit tests (test_health, test_errors) never touch Postgres.
+
+    Truncates ALL base tables in the public schema dynamically, so a newly
+    scaffolded module's table is cleaned between tests with no edit here.
+    (The public schema holds only app tables; Supabase system tables live in
+    other schemas. This removes a row-pollution footgun for new modules —
+    e.g. scaffold-module — whose list/pagination tests would otherwise see
+    rows left by earlier tests.)"""
     import psycopg
 
     with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
-        conn.execute("truncate vehicles, app_events")
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "select tablename from pg_tables where schemaname = 'public'"
+            ).fetchall()
+        ]
+        if tables:
+            idents = ", ".join(f'"{t}"' for t in tables)
+            conn.execute(f"truncate {idents} restart identity cascade")
     yield
 
 
