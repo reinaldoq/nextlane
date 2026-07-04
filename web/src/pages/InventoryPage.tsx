@@ -136,6 +136,15 @@ function InventoryPage() {
     setPage(1)
   }
 
+  function clearFilters() {
+    clearTimeout(searchTimeoutRef.current)
+    setRawQuery('')
+    setDebouncedQuery('')
+    setStatusFilter('all')
+    setSort(DEFAULT_SORT)
+    setPage(1)
+  }
+
   const handleTableChange: TableChangeHandler = (pagination, _filters, sorter, extra) => {
     if (extra.action === 'sort') {
       const single = Array.isArray(sorter) ? sorter[0] : sorter
@@ -165,7 +174,12 @@ function InventoryPage() {
     refreshKey,
   })
 
-  const hasActiveFilters = debouncedQuery.trim() !== '' || statusFilter !== 'all'
+  const hasActiveFilters =
+    rawQuery.trim() !== '' ||
+    debouncedQuery.trim() !== '' ||
+    statusFilter !== 'all' ||
+    sort.field !== DEFAULT_SORT.field ||
+    sort.order !== DEFAULT_SORT.order
 
   const columns: TableColumnsType<Vehicle> = useMemo(
     () => [
@@ -276,11 +290,16 @@ function InventoryPage() {
               }}
               style={{ maxWidth: 360, width: '100%' }}
             />
-            <Segmented<StatusOption>
-              value={statusFilter}
-              onChange={handleStatusChange}
-              options={STATUS_OPTIONS}
-            />
+            <Flex align="center" gap={8} wrap="wrap">
+              <Segmented<StatusOption>
+                value={statusFilter}
+                onChange={handleStatusChange}
+                options={STATUS_OPTIONS}
+              />
+              <Button disabled={!hasActiveFilters} onClick={clearFilters}>
+                Clear filters
+              </Button>
+            </Flex>
           </Flex>
 
           {error !== null && (
