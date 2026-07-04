@@ -42,9 +42,14 @@ test('inventory golden path: create, search, transition, delete', async ({ page 
   })
 
   const row = page.getByRole('row', { name: new RegExp(vin) })
+  const totalText = page.locator('.ant-pagination-total-text')
+  let fullInventoryTotal = ''
 
   await test.step('search isolates the new vehicle', async () => {
     const search = page.getByRole('searchbox', { name: 'Search inventory' })
+    await expect(totalText).toHaveText(/\d+ vehicles?/)
+    fullInventoryTotal = await totalText.textContent().then((text) => text ?? '')
+
     await search.fill(vin)
     await search.press('Enter')
 
@@ -53,6 +58,20 @@ test('inventory golden path: create, search, transition, delete', async ({ page 
     await expect(row.getByText('Smoke')).toBeVisible()
     await expect(row.getByText(/12\.345,67\s*€/)).toBeVisible()
     await expect(row.getByText('Available', { exact: true })).toBeVisible()
+  })
+
+  await test.step('clear filters restores the full vehicle list', async () => {
+    const search = page.getByRole('searchbox', { name: 'Search inventory' })
+
+    await page.getByRole('button', { name: 'Clear filters' }).click()
+
+    await expect(search).toHaveValue('')
+    await expect(totalText).toHaveText(fullInventoryTotal)
+    await expect(page.getByText('No vehicles match your search or filters.')).toHaveCount(0)
+
+    await search.fill(vin)
+    await search.press('Enter')
+    await expect(page.getByRole('row', { name: new RegExp(vin) })).toHaveCount(1)
   })
 
   await test.step('reserve the vehicle', async () => {
