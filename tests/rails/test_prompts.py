@@ -95,6 +95,18 @@ def test_compose_contains_engine_label_in_coauthor_line():
     assert "Co-Authored-By: Codex (rails) <noreply@nextlane.dev>" in prompt
 
 
+def test_compose_coauthor_trailer_is_flush_left():
+    """A git trailer must sit at the start of its own line -- an indented
+    `    Co-Authored-By: ...` is NOT parsed as a trailer by git, so the
+    exemplar the prompt shows the agent must itself be flush-left."""
+    prompt = compose("build-feature", "do the thing", engine_label="Codex (rails)")
+
+    assert "\nCo-Authored-By: Codex (rails) <noreply@nextlane.dev>" in prompt
+    # and it must NOT appear indented
+    assert "\n    Co-Authored-By:" not in prompt
+    assert "\n\tCo-Authored-By:" not in prompt
+
+
 def test_compose_instructs_reading_agents_md():
     prompt = compose("build-feature", "do the thing", engine_label="Claude (rails)")
 
@@ -119,16 +131,6 @@ def test_compose_forbids_pushing_and_touching_rails_dir():
 
     assert "do not push" in prompt.lower()
     assert "rails/" in prompt
-
-
-def test_compose_accepts_optional_repo_root(tmp_path):
-    # repo_root is accepted for API symmetry / future use; passing it must
-    # not raise and must not change the parts under test above.
-    prompt = compose(
-        "build-feature", "do the thing", engine_label="Claude (rails)", repo_root=tmp_path
-    )
-
-    assert '<task kind="build-feature">' in prompt
 
 
 # --- compose_retry ----------------------------------------------------------

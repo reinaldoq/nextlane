@@ -30,7 +30,17 @@ VALID_OUTCOMES = frozenset({"pr_opened", "gate_failed", "review_rejected", "erro
 
 @dataclass(frozen=True)
 class RunRecord:
-    """One row of the run journal -- see module docstring."""
+    """One row of the run journal -- see module docstring.
+
+    `schema_version` distinguishes journal-line layouts across phases. It is
+    the LAST field and carries a default so that:
+      - old lines written before it existed still parse (`from_row` fills the
+        default), and
+      - fields added in a future phase can likewise be declared with defaults
+        so both old and new code read each other's rows.
+    Bump it whenever the set of fields changes in a way readers must know
+    about.
+    """
 
     ts_iso: str
     task_kind: str
@@ -44,12 +54,33 @@ class RunRecord:
     cost_usd: float | None
     pr_url: str | None
     outcome: str
+    schema_version: int = 1
 
     def __post_init__(self) -> None:
         if self.outcome not in VALID_OUTCOMES:
             raise ValueError(
                 f"RunRecord.outcome must be one of {sorted(VALID_OUTCOMES)}, got {self.outcome!r}"
             )
+
+    @classmethod
+    def from_row(cls, row: dict) -> RunRecord:
+        """Build a RunRecord from a raw JSON dict, tolerant of schema drift.
+
+        Selects only KNOWN fields (unknown keys from a newer writer are
+        ignored) and fills a default for any known field MISSING from the row
+        -- the field's declared default if it has one (e.g. schema_version),
+        otherwise None. That lets old lines (missing later-added fields) and
+        newer lines (carrying fields this code doesn't know) both load.
+        """
+        kwargs: dict = {}
+        for f in dataclasses.fields(cls):
+            if f.name in row:
+                kwargs[f.name] = row[f.name]
+            elif f.default is not dataclasses.MISSING:
+                kwargs[f.name] = f.default
+            else:
+                kwargs[f.name] = None
+        return cls(**kwargs)
 
     @classmethod
     def new(
@@ -106,7 +137,10 @@ def record(run: RunRecord, *, journal_path: Path | None = None) -> None:
     path = journal_path if journal_path is not None else _default_journal_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(dataclasses.asdict(run)) + "\n")
+        # ensure_ascii=False: the journal is committed as human-readable
+        # evidence (Task 9) -- accents/emoji in a task_summary or PR title
+        # stay legible instead of turning into \uXXXX escapes.
+        fh.write(json.dumps(dataclasses.asdict(run), ensure_ascii=False) + "\n")
 
 
 def load(journal_path: Path | None = None) -> list[RunRecord]:
@@ -124,5 +158,5 @@ def load(journal_path: Path | None = None) -> list[RunRecord]:
             line = line.strip()
             if not line:
                 continue
-            records.append(RunRecord(**json.loads(line)))
+            records.append(RunRecord.from_row(json.loads(line)))
     return records
