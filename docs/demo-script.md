@@ -2,13 +2,18 @@
 
 Run-of-show for the interview panel session: the panel hands us a fresh,
 unseen task and we build it live with the rails, on top of a repo where the
-rails have already shipped three real cross-vendor runs to production. This
+rails have already shipped four real cross-vendor runs to production. This
 doc is the presenter's cheat sheet — preflight, timings, exact commands,
 fallbacks, and the talking points that turn "it ran" into "here's why it's
 trustworthy."
 
 **Live app:** https://nextlane-blond.vercel.app (Vercel git auto-deploy is
 connected: merge to `main` → prod, no manual deploy step).
+
+**Mission Control:** https://nextlane-blond.vercel.app/mission-control — the
+live in-app dashboard of agent runs. Keep this open on a second screen/tab;
+it updates *while a run happens* (a `running` row with a growing step
+timeline), so it's the visual anchor for the whole demo.
 
 ## Preflight (do this 10-15 minutes before the call, not during it)
 
@@ -57,16 +62,17 @@ doing it in preflight doubles as a rehearsal).
 
 Total budget: ~20-25 minutes end-to-end, built around **two** real agent
 runs (one prepared, one from the panel) at 3-8 minutes of actual session
-time each — that's what the three already-merged runs actually took
-(PR#18: 255s / PR#19: 463s / PR#23: 206s, per `rails/journal/runs.jsonl`).
-Everything else is narration over dead air or fast to click through.
+time each — that's what the four already-merged runs actually took
+(PR#18: 255s / PR#19: 463s / PR#23: 206s / PR#26: 273s, per
+`rails/journal/runs.jsonl`). Everything else is narration over dead air,
+watching Mission Control fill in, or fast to click through.
 
 | time | segment | what you do | what you say |
 | --- | --- | --- | --- |
 | 0:00-0:30 | **(a) The deployed app** | Open https://nextlane-blond.vercel.app, log in | "This is a real DMS slice — vehicle inventory, Postgres-backed, RLS-enforced — deployed on Vercel. Everything you'll see get built in the next 20 minutes ships to this exact URL." |
 | 0:30-2:30 | **(b) The four artifacts** | Open, in order: `AGENTS.md` (agent rules), `.claude/skills/scaffold-module` + `.claude/skills/domain-reviewer` (skills), `rails/agents/` + `uv run rails --help` (the day-2 agents), `.github/workflows/ci.yml` + branch protection settings (the gate/CI) | "Four graded artifacts: the rules every engine reads before touching code, two reusable skills, the day-2 agents themselves — one Typer CLI, one shared loop — and the deterministic gate + CI that nothing reaches `main` without passing." |
-| 2:30-3:30 | **(c) Proof it already ran** | `cat rails/journal/runs.jsonl \| jq .` (or just show the 3 lines) | "Three real cross-vendor runs, already merged, already live: #18 Claude built a stats endpoint, Codex reviewed; #19 Codex built a UI feature + e2e, Claude reviewed; #23 a dealer-filed bug went through `rails triage` end to end. Engine, reviewer, verdict, cost, PR URL — nothing here is staged." |
-| 3:30-10:00 | **(d) One prepared day-2 task, live** | See "Prepared task" below. Run it, narrate the phase banners, `tail -f` the transcript during the dead air, land on the gate + review + proposed lesson + PR. | See narration script below. |
+| 2:30-3:30 | **(c) Proof it already ran** | Open **Mission Control** (`/mission-control`) — four runs with engine badges + verdict chips; click one to show its step timeline. Optionally `cat rails/journal/runs.jsonl \| jq .` for the raw evidence. | "Four real cross-vendor runs, already merged, already live: #18 Claude built a stats endpoint, Codex reviewed; #19 Codex built a UI feature + e2e, Claude reviewed; #23 a dealer-filed bug went through `rails triage` end to end; #26 Claude built the CSV export you'll also see. This dashboard is *inside the product* — the agents' work, shown in the product they're building. Nothing here is staged." |
+| 3:30-10:00 | **(d) One prepared day-2 task, live** | See "Prepared task" below. Run it; **switch to the Mission Control tab and watch the `running` row + step timeline appear live** while you narrate the phase banners; `tail -f` the transcript during dead air; land on the gate + review + proposed lesson + PR. | See narration script below. |
 | 10:00-11:00 | **Merge → auto-deploy** | `gh pr checks --watch`, squash-merge, then reload the prod URL to show the new behavior live | "Merge to `main`, Vercel's git integration takes it from here — no manual deploy step. Refreshing prod now." |
 | 11:00-20:00+ | **(f) The panel's fresh task** | Same command shape, a spec nobody has seen before | "Same command, unseen spec — this is the same loop you just watched, not a rehearsed one." |
 
@@ -74,15 +80,16 @@ Everything else is narration over dead air or fast to click through.
 
 Pick something small and safely scoped ahead of time (shape it like PR#18/
 #19: one endpoint or one UI affordance on the `vehicles` module, not a new
-module). A good default to have ready: **"Add a `GET /api/vehicles/export.csv`
-endpoint that streams the current filtered list as CSV"** — small, mirrors
-the existing filter/sort code path, low risk of colliding with the panel's
-later ask.
+module). **Note: `GET /api/vehicles/export.csv` is already built (PR#26) —
+don't reuse it.** A good default to have ready: **"Add a `total_value_cents`
+field to `GET /api/vehicles/stats`"** — small, extends the existing stats
+endpoint's single-query aggregation, backend + one test, low risk of
+colliding with the panel's later ask.
 
 ```bash
 uv run rails build-feature \
-  "Add a GET /api/vehicles/export.csv endpoint that streams the current \
-   filtered inventory list as CSV, reusing the existing filter/sort params" \
+  "Add a total_value_cents field to GET /api/vehicles/stats that sums \
+   price_cents across all vehicles, in the same single aggregate query" \
   --engine claude --reviewer codex
 ```
 
@@ -136,10 +143,24 @@ step:
 1. Click **"Report issue"** in the live app (`web/src/components/
    ReportIssueModal.tsx`) and file a bug.
 2. `uv run rails triage --event <app_events id>` — fetches the reported row,
-   drives a headless session that **reproduces the bug with a failing test
-   first**, then fixes it.
+   then runs the **enforced red→green protocol**: phase 1, the agent writes
+   *only* a reproduction test and the harness **runs it and confirms it
+   FAILS** (bug genuinely reproduced — not the agent's word for it); phase 2,
+   the agent fixes the code and the harness confirms that test now **PASSES**
+   with no regressions. If the "repro" passes green with no fix — e.g. the
+   two seeded reports about a photo-upload feature and a price-range filter
+   that *don't exist* — triage honestly reports **`cannot_reproduce`** and
+   opens no PR, instead of hallucinating a fix.
 3. Cross-vendor review, gate, PR — same loop as build-feature.
-4. Point at the PR's proposed lesson, merge, watch Vercel auto-deploy.
+4. Point at the PR body's **"✓ Enforced reproduce-then-fix"** proof line and
+   the proposed lesson, merge, watch Vercel auto-deploy.
+
+> **Talking point for this step:** this is the single most evidence-backed
+> reliability lever in the whole system (see `docs/design-rationale.md`).
+> TDFlow (EACL 2026) shows a mandatory failing-reproduction-test gate takes
+> SWE-Bench bug-fixing to 93–94%, and its own finding is that *writing the
+> failing test is the bottleneck, not the fix* — which is exactly why the
+> harness verifies the red state mechanically rather than trusting it.
 
 **This already happened for real — PR#23.** A dealer-shaped report ("our
 inventory integration's sort request gets an error that doesn't list the
@@ -203,3 +224,21 @@ touches.
   genuinely generalizable — PR#23's proposed lesson about surfacing
   whitelist values in 422 `details` is the one example of that curation
   step actually happening (see `rails/LEARNINGS.md`).
+- **Enforced red→green isn't a prompt, it's a gate.** Triage doesn't just
+  *ask* the agent to write a failing test first — the harness runs the test
+  and checks the gate's own `pytest` step result to confirm it's actually
+  red before allowing a fix, and confirms green after. A "fix" that never
+  had a failing test, or a bug that can't be reproduced, can't produce a PR.
+- **Mission Control is observation, not enforcement — on purpose.** The
+  dashboard and journal are how we *see* what happened; they don't decide
+  whether a run ships. That's a deliberate split (see
+  `docs/design-rationale.md`): enforcement is the gate + the review + the
+  red→green protocol; observability is evidence. It's why tests can never
+  write to the dashboard (the isolation fix), and why a dead dashboard would
+  never let a bad change through.
+- **Every design choice is grounded, not improvised.** `docs/design-
+  rationale.md` maps each decision — deterministic harness, blocking gate,
+  single-writer + isolated diff-only review, enforced red→green,
+  observability-not-enforcement — to the primary sources (Anthropic, OpenAI,
+  Cognition/Devin, TDFlow, JetBrains). If the panel asks "why did you build
+  it this way," the answer is cited.
