@@ -25,6 +25,21 @@ each session start, each gate, the review verdict, the PR. The final rich
 summary table still prints at the end. Tests set a recording console via
 monkeypatching `rails.agents.loop.err_console`.
 
+Mission Control telemetry (the one sanctioned post-Phase-1-freeze app
+addition, design spec Sec6/Sec12): `_mc_start_run` / `_mc_step` / `_mc_finish`
+mirror the phase banners above into `rails.mission_control`'s PostgREST
+writes (`agent_runs`/`run_steps` on the HOSTED Supabase project) so the
+deployed `/mission-control` page can show a run live while it's happening.
+This is PURE OBSERVABILITY, never load-bearing: every one of the three
+wrappers catches any exception from `rails.mission_control` (a network
+failure, or -- the common local case -- SUPABASE_URL/
+SUPABASE_SERVICE_ROLE_KEY simply not being set) and logs a warning via
+`err_console` instead of propagating, so a rails run with no hosted
+credentials configured behaves identically to one where Mission Control
+doesn't exist at all. `run_id` is `None` whenever `_mc_start_run` failed;
+`_mc_step`/`_mc_finish` then no-op immediately rather than attempting a
+write with no run to attach it to.
+
 Robustness invariants:
 - **PR opens ONLY on a green final gate.** A red gate (initial, exhausted
   retry, or post-revision), an empty branch, a SessionError, a blown budget,
@@ -96,13 +111,14 @@ import subprocess
 import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from itertools import count
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from rails import github
+from rails import github, mission_control
 from rails.adapters import get_adapter
 from rails.adapters.base import SessionError, SessionResult
 from rails.config import RailsConfig
@@ -319,6 +335,84 @@ def _auto_commit(wt_path: Path, *, message: str) -> None:
     )
 
 
+def _mc_start_run(
+    *,
+    task_kind: str,
+    task_summary: str,
+    engine: str,
+    reviewer_engine: str | None,
+    worktree_branch: str,
+) -> str | None:
+    """Best-effort: create this run's `agent_runs` row on the HOSTED
+    Supabase project (see module docstring's "Mission Control telemetry").
+    Returns the new run's id, or `None` on ANY failure (missing hosted
+    credentials is the common local case) -- callers treat `None` as "no
+    Mission Control row exists for this run" and skip every further
+    `_mc_step`/`_mc_finish` call rather than erroring."""
+    try:
+        return mission_control.start_run(
+            {
+                "task_kind": task_kind,
+                "task_summary": task_summary,
+                "engine": engine,
+                "reviewer_engine": reviewer_engine,
+                "worktree_branch": worktree_branch,
+                "status": "running",
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 -- observability must never break a run
+        err_console.print(
+            "[yellow]warning: mission control start_run failed (non-fatal -- this run "
+            f"continues unaffected, just invisible to /mission-control): {exc}[/yellow]"
+        )
+        return None
+
+
+def _mc_step(
+    run_id: str | None, seq: int, phase: str, status: str, detail: str | None = None
+) -> None:
+    """Best-effort `run_steps` row. A no-op when `run_id` is `None` (this
+    run's `agent_runs` row was never created -- see `_mc_start_run`)."""
+    if run_id is None:
+        return
+    try:
+        mission_control.add_step(run_id, seq, phase, status, detail)
+    except Exception as exc:  # noqa: BLE001 -- observability must never break a run
+        err_console.print(
+            f"[yellow]warning: mission control add_step failed (non-fatal): {exc}[/yellow]"
+        )
+
+
+def _mc_finish(
+    run_id: str | None,
+    *,
+    status: str,
+    gate_ok: bool | None,
+    review_verdict: str | None,
+    cost_usd: float | None,
+    pr_url: str | None,
+    retries: int,
+) -> None:
+    """Best-effort terminal PATCH of this run's `agent_runs` row. A no-op
+    when `run_id` is `None` (see `_mc_start_run`)."""
+    if run_id is None:
+        return
+    try:
+        mission_control.finish_run(
+            run_id,
+            status=status,
+            gate_ok=gate_ok,
+            review_verdict=review_verdict,
+            cost_usd=cost_usd,
+            pr_url=pr_url,
+            retries=retries,
+        )
+    except Exception as exc:  # noqa: BLE001 -- observability must never break a run
+        err_console.print(
+            f"[yellow]warning: mission control finish_run failed (non-fatal): {exc}[/yellow]"
+        )
+
+
 def _compose_revision(original_prompt: str, review_feedback: str) -> str:
     """The ONE post-review revision prompt: the original task framing plus
     the reviewer's REQUEST_CHANGES feedback. `review_feedback` is the
@@ -424,6 +518,14 @@ def run_agent_task(
 
     with worktree_cm(slug_from(title), repo_root=cfg.repo_root) as wt:
         transcript_dir = wt.path / ".rails-transcripts"
+        mc_seq = count(1)
+        run_id = _mc_start_run(
+            task_kind=task_kind,
+            task_summary=title,
+            engine=engine,
+            reviewer_engine=reviewer_engine,
+            worktree_branch=wt.branch,
+        )
 
         def _phase(msg: str) -> None:
             elapsed = time.monotonic() - start
@@ -456,6 +558,15 @@ def run_agent_task(
                 review_verdict=review_verdict,
                 proposed_learnings=proposed_learnings,
             )
+            _mc_finish(
+                run_id,
+                status=outcome,
+                gate_ok=gate_ok,
+                review_verdict=review_verdict,
+                cost_usd=run.cost_usd,
+                pr_url=pr_url,
+                retries=retries,
+            )
             record_fn(run)
             return run
 
@@ -475,6 +586,7 @@ def run_agent_task(
         def _run_session(adapter, prompt: str, *, label: str, gate_ok: bool) -> SessionResult:
             timeout_s = _budget_or_exit(gate_ok)
             _phase(f"▶ {label} ({adapter.name}) … (up to {timeout_s}s of remaining budget)")
+            _mc_step(run_id, next(mc_seq), label, "started")
             try:
                 session = adapter.run(prompt, cwd=wt.path, timeout_s=timeout_s, extra_env=extra_env)
             except SessionError as exc:
@@ -482,6 +594,7 @@ def run_agent_task(
                 _phase(f"[bold red]✗ {label} failed: {exc}[/bold red]")
                 if failing is not None:
                     _phase(f"inspect the failing session transcript: {failing}")
+                _mc_step(run_id, next(mc_seq), label, "failed", str(exc))
                 _record(
                     gate_ok=gate_ok,
                     pr_url=None,
@@ -496,6 +609,13 @@ def run_agent_task(
                     f"[yellow]⚠ {label} exited ok but emitted no terminal result event -- "
                     "its output may be truncated; inspect the transcript.[/yellow]"
                 )
+            _mc_step(
+                run_id,
+                next(mc_seq),
+                label,
+                "ok" if session.ok else "failed",
+                session.final_message[:500] if session.final_message else None,
+            )
             return session
 
         def _gate(gate_ok_before: bool) -> GateResult:
@@ -504,9 +624,11 @@ def run_agent_task(
             result = run_gate_fn(wt.path, env=extra_env, total_timeout_s=timeout_s)
             if result.ok:
                 _phase("[green]✓ gate green[/green]")
+                _mc_step(run_id, next(mc_seq), "gate", "ok")
             else:
                 failed = ", ".join(step.name for step in result.failed_steps())
                 _phase(f"[bold red]✗ gate red -- failing steps: {failed}[/bold red]")
+                _mc_step(run_id, next(mc_seq), "gate", "failed", failed)
             return result
 
         def _run_retro(prompt: str) -> list[str]:
@@ -524,6 +646,9 @@ def run_agent_task(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _phase("[yellow]⚠ retro skipped: no run budget remaining[/yellow]")
+                _mc_step(
+                    run_id, next(mc_seq), "retro", "failed", "skipped: no run budget remaining"
+                )
                 return []
             timeout_s = max(1, min(300, int(remaining)))
             # A FRESH readonly adapter for the builder's engine -- distinct
@@ -533,6 +658,7 @@ def run_agent_task(
             # never mutate the worktree either.
             retro_adapter = make_adapter(engine, cfg, readonly=True)
             _phase(f"▶ retro session ({retro_adapter.name}) …")
+            _mc_step(run_id, next(mc_seq), "retro", "started")
             try:
                 session = retro_adapter.run(
                     prompt, cwd=wt.path, timeout_s=timeout_s, extra_env=extra_env
@@ -542,6 +668,7 @@ def run_agent_task(
                     f"[yellow]⚠ retro session failed -- no proposed learnings this run "
                     f"(the PR is already ready to open regardless): {exc}[/yellow]"
                 )
+                _mc_step(run_id, next(mc_seq), "retro", "failed", str(exc))
                 return []
             sessions.append(session)  # cost_usd still sums across ALL sessions, incl. retro
             lessons = parse_retro_lessons(session.final_message)
@@ -549,10 +676,12 @@ def run_agent_task(
                 f"retro proposed {len(lessons)} lesson(s) for rails/LEARNINGS.md "
                 "(human review required before adding them)"
             )
+            _mc_step(run_id, next(mc_seq), "retro", "ok", f"{len(lessons)} lesson(s) proposed")
             return lessons
 
         _phase(f"worktree ready: branch [bold]{wt.branch}[/bold] at {wt.path}")
         _phase(f"transcripts under {transcript_dir} (tail -f to follow the live session)")
+        _mc_step(run_id, next(mc_seq), "worktree", "ok", f"branch {wt.branch} at {wt.path}")
 
         # --- build ---
         # Self-improvement flywheel, forward channel: inject the committed,
@@ -605,6 +734,9 @@ def run_agent_task(
                 f"Co-Authored-By: {engine} via nextlane-rails <noreply@nextlane.dev>"
             )
             _auto_commit(wt.path, message=commit_message)
+            _mc_step(
+                run_id, next(mc_seq), "commit", "ok", "auto-committed uncommitted session work"
+            )
 
         # --- I2: empty-diff guard. A green gate on a branch with STILL zero
         # commits (even after the auto-commit rescue above) means the agent
@@ -625,6 +757,7 @@ def run_agent_task(
         sessions.append(review_session)
         review_verdict = parse_verdict(review_session.final_message)
         _phase(f"review verdict from {reviewer_engine}: [bold]{review_verdict}[/bold]")
+        _mc_step(run_id, next(mc_seq), "review-verdict", "ok", review_verdict)
 
         revised = False
         if review_verdict != "APPROVE":
@@ -660,6 +793,7 @@ def run_agent_task(
             sessions.append(final_review_session)
             review_verdict = parse_verdict(final_review_session.final_message)
             _phase(f"final review verdict from {reviewer_engine}: [bold]{review_verdict}[/bold]")
+            _mc_step(run_id, next(mc_seq), "review-verdict", "ok", f"final: {review_verdict}")
 
         if not open_pr:
             run = _record(gate_ok=True, pr_url=None, outcome="completed_no_pr")
@@ -721,6 +855,7 @@ def run_agent_task(
                 f"{lessons_md}"
             )
         _phase("▶ opening PR …")
+        _mc_step(run_id, next(mc_seq), "pr", "started")
         try:
             pr_url = open_pr_fn(worktree=wt, title=title, body=body, repo_root=cfg.repo_root)
         except GitHubError as exc:
@@ -728,9 +863,11 @@ def run_agent_task(
             # before gh failed, so we don't attempt remote branch cleanup here
             # (a TODO, not a correctness bug -- see module docstring/spec I5b).
             _phase(f"[bold red]✗ opening the PR failed: {exc}[/bold red]")
+            _mc_step(run_id, next(mc_seq), "pr", "failed", str(exc))
             _record(gate_ok=True, pr_url=None, outcome="error")
             raise
         _phase(f"[green]✓ PR opened:[/green] {pr_url}")
+        _mc_step(run_id, next(mc_seq), "pr", "ok", pr_url)
 
         run = _record(gate_ok=True, pr_url=pr_url, outcome="pr_opened")
         # I1: print the summary BEFORE cleanup, and let a cleanup failure only

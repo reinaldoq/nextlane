@@ -1365,6 +1365,260 @@ def test_retro_prompt_includes_diff_and_review_verdict(monkeypatch):
     assert "VERDICT: APPROVE" in retro_prompt
 
 
+# === Mission Control: best-effort run telemetry ============================
+#
+# `rails.agents.loop` calls `rails.mission_control` (module-level, patched
+# directly here exactly like `_diff`/`_count_commits`/`_auto_commit` above)
+# to post agent_runs/run_steps rows to the HOSTED Supabase project as the run
+# progresses. This is pure observability for the Mission Control dashboard:
+# every call must be BEST-EFFORT -- a missing SUPABASE_URL/
+# SUPABASE_SERVICE_ROLE_KEY (the default in every OTHER test in this file,
+# which never sets them) or a raising fake must never change the run's
+# outcome, only print a warning.
+
+
+class FakeMissionControl:
+    """Records every start_run/add_step/finish_run call. `start_run`
+    returns a fixed run_id unless `start_run_error` is set, in which case it
+    raises instead (proving the loop survives it)."""
+
+    def __init__(self, *, start_run_error: Exception | None = None, run_id: str = "run-123"):
+        self.start_run_error = start_run_error
+        self.run_id = run_id
+        self.start_calls: list[dict] = []
+        self.step_calls: list[dict] = []
+        self.finish_calls: list[dict] = []
+        self.add_step_error: Exception | None = None
+        self.finish_run_error: Exception | None = None
+
+    def start_run(self, record, *, opener=None):
+        self.start_calls.append(record)
+        if self.start_run_error is not None:
+            raise self.start_run_error
+        return self.run_id
+
+    def add_step(self, run_id, seq, phase, status, detail=None, *, opener=None):
+        self.step_calls.append(
+            {"run_id": run_id, "seq": seq, "phase": phase, "status": status, "detail": detail}
+        )
+        if self.add_step_error is not None:
+            raise self.add_step_error
+
+    def finish_run(self, run_id, *, status, gate_ok, review_verdict, cost_usd, pr_url, **kw):
+        self.finish_calls.append(
+            {
+                "run_id": run_id,
+                "status": status,
+                "gate_ok": gate_ok,
+                "review_verdict": review_verdict,
+                "cost_usd": cost_usd,
+                "pr_url": pr_url,
+                **kw,
+            }
+        )
+        if self.finish_run_error is not None:
+            raise self.finish_run_error
+
+
+def test_mission_control_env_missing_by_default_run_still_succeeds(monkeypatch):
+    """Every other test in this file never sets SUPABASE_URL/
+    SUPABASE_SERVICE_ROLE_KEY -- proving the REAL rails.mission_control
+    module (not a fake) raises MissionControlError on every call here, and
+    the loop still completes normally with a warning, not a crash."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(final_message="Implemented the thing.")],
+        reviewer_responses=[make_session(final_message="LGTM.\n\nVERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="add a widget", title="feat: add a widget", **kwargs
+    )
+
+    assert run.outcome == "pr_opened"
+    assert "mission control" in fakes["console"].text.lower()
+    assert "non-fatal" in fakes["console"].text.lower()
+
+
+def test_mission_control_start_run_called_with_run_metadata(monkeypatch):
+    mc = FakeMissionControl()
+    monkeypatch.setattr("rails.mission_control.start_run", mc.start_run)
+    monkeypatch.setattr("rails.mission_control.add_step", mc.add_step)
+    monkeypatch.setattr("rails.mission_control.finish_run", mc.finish_run)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(engine="claude")],
+        reviewer_responses=[make_session(engine="codex", final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config(engine="claude")
+
+    run_agent_task(
+        cfg, task_kind="feature", task_body="add a widget", title="feat: add a widget", **kwargs
+    )
+
+    assert len(mc.start_calls) == 1
+    record = mc.start_calls[0]
+    assert record["task_kind"] == "feature"
+    assert record["task_summary"] == "feat: add a widget"
+    assert record["engine"] == "claude"
+    assert record["reviewer_engine"] == "codex"
+    assert record["worktree_branch"] == "rails/fake-task-abc123"
+
+
+def test_mission_control_add_step_called_for_worktree_builder_gate_review_pr(monkeypatch):
+    mc = FakeMissionControl()
+    monkeypatch.setattr("rails.mission_control.start_run", mc.start_run)
+    monkeypatch.setattr("rails.mission_control.add_step", mc.add_step)
+    monkeypatch.setattr("rails.mission_control.finish_run", mc.finish_run)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(final_message="Implemented the thing.")],
+        reviewer_responses=[make_session(final_message="LGTM.\n\nVERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", retro=False, **kwargs)
+
+    phases = [c["phase"] for c in mc.step_calls]
+    assert "worktree" in phases
+    assert "builder session" in phases
+    assert "gate" in phases
+    assert "review" in phases
+    assert "pr" in phases
+    # every step is tagged with the run_id start_run returned
+    assert all(c["run_id"] == mc.run_id for c in mc.step_calls)
+    # sequence numbers are unique and increasing
+    seqs = [c["seq"] for c in mc.step_calls]
+    assert seqs == sorted(set(seqs))
+    assert len(seqs) == len(set(seqs))
+
+
+def test_mission_control_finish_run_called_once_with_final_outcome(monkeypatch):
+    mc = FakeMissionControl()
+    monkeypatch.setattr("rails.mission_control.start_run", mc.start_run)
+    monkeypatch.setattr("rails.mission_control.add_step", mc.add_step)
+    monkeypatch.setattr("rails.mission_control.finish_run", mc.finish_run)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert len(mc.finish_calls) == 1
+    finish = mc.finish_calls[0]
+    assert finish["run_id"] == mc.run_id
+    assert finish["status"] == "pr_opened"
+    assert finish["gate_ok"] is True
+    assert finish["review_verdict"] == "APPROVE"
+    assert finish["pr_url"] == run.pr_url
+    assert finish["cost_usd"] == run.cost_usd
+
+
+def test_mission_control_finish_run_reflects_gate_failed_outcome(monkeypatch):
+    mc = FakeMissionControl()
+    monkeypatch.setattr("rails.mission_control.start_run", mc.start_run)
+    monkeypatch.setattr("rails.mission_control.add_step", mc.add_step)
+    monkeypatch.setattr("rails.mission_control.finish_run", mc.finish_run)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(False)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit):
+        run_agent_task(
+            cfg, task_kind="feature", task_body="x", title="feat: x", max_retries=0, **kwargs
+        )
+
+    assert len(mc.finish_calls) == 1
+    assert mc.finish_calls[0]["status"] == "gate_failed"
+    assert mc.finish_calls[0]["gate_ok"] is False
+    assert mc.finish_calls[0]["pr_url"] is None
+
+
+def test_mission_control_start_run_raising_is_non_fatal_no_steps_or_finish_posted(monkeypatch):
+    """When start_run itself fails, the run_id is unknown -- add_step/
+    finish_run must never even be attempted (nothing to attach them to),
+    and the run must still complete normally."""
+    mc = FakeMissionControl(start_run_error=RuntimeError("network is down"))
+    monkeypatch.setattr("rails.mission_control.start_run", mc.start_run)
+    monkeypatch.setattr("rails.mission_control.add_step", mc.add_step)
+    monkeypatch.setattr("rails.mission_control.finish_run", mc.finish_run)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"
+    assert len(mc.start_calls) == 1
+    assert mc.step_calls == []
+    assert mc.finish_calls == []
+    assert "mission control" in fakes["console"].text.lower()
+    assert "non-fatal" in fakes["console"].text.lower()
+
+
+def test_mission_control_add_step_raising_is_non_fatal_run_still_completes(monkeypatch):
+    mc = FakeMissionControl()
+    mc.add_step_error = RuntimeError("supabase 500")
+    monkeypatch.setattr("rails.mission_control.start_run", mc.start_run)
+    monkeypatch.setattr("rails.mission_control.add_step", mc.add_step)
+    monkeypatch.setattr("rails.mission_control.finish_run", mc.finish_run)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"
+    assert len(mc.step_calls) > 0  # every attempt still made (each one independently caught)
+    # finish_run is unaffected by add_step's earlier failures
+    assert len(mc.finish_calls) == 1
+    assert "mission control" in fakes["console"].text.lower()
+
+
+def test_mission_control_finish_run_raising_is_non_fatal_run_object_still_returned(monkeypatch):
+    mc = FakeMissionControl()
+    mc.finish_run_error = RuntimeError("supabase timeout")
+    monkeypatch.setattr("rails.mission_control.start_run", mc.start_run)
+    monkeypatch.setattr("rails.mission_control.add_step", mc.add_step)
+    monkeypatch.setattr("rails.mission_control.finish_run", mc.finish_run)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"
+    assert run.pr_url == fakes["open_pr_fn"].url
+    assert len(mc.finish_calls) == 1
+    assert "mission control" in fakes["console"].text.lower()
+
+
 # === M1: retry prompt recomposed from the ORIGINAL, not nested ==============
 
 

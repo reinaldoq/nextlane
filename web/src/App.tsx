@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import { Navigate, NavLink, Outlet, Route, Routes } from 'react-router-dom'
 import { Button, Flex, Layout, Spin, Typography, theme } from 'antd'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
 import InventoryPage from './pages/InventoryPage'
+import MissionControlPage from './pages/MissionControlPage'
 import ReportIssueModal from './components/ReportIssueModal'
 
 const { Header, Content } = Layout
@@ -84,6 +85,11 @@ function LoginRoute() {
   return <LoginPage />
 }
 
+const NAV_LINKS = [
+  { to: '/', label: 'Inventory', end: true },
+  { to: '/mission-control', label: 'Mission Control', end: false },
+]
+
 function AppFrame({ email }: { email: string }) {
   const { token } = theme.useToken()
 
@@ -95,9 +101,30 @@ function AppFrame({ email }: { email: string }) {
     <Layout style={{ minHeight: '100vh' }}>
       <Header>
         <Flex align="center" justify="space-between" style={{ height: '100%' }}>
-          <Title level={3} style={{ color: token.colorTextLightSolid, margin: 0 }}>
-            Nextlane DMS
-          </Title>
+          <Flex align="center" gap={32}>
+            <Title level={3} style={{ color: token.colorTextLightSolid, margin: 0 }}>
+              Nextlane DMS
+            </Title>
+            <Flex align="center" gap={4} component="nav">
+              {NAV_LINKS.map((link) => (
+                <NavLink
+                  key={link.to}
+                  to={link.to}
+                  end={link.end}
+                  style={({ isActive }) => ({
+                    color: token.colorTextLightSolid,
+                    opacity: isActive ? 1 : 0.7,
+                    fontWeight: isActive ? 600 : 400,
+                    padding: '6px 12px',
+                    borderRadius: token.borderRadius,
+                    background: isActive ? 'rgba(255, 255, 255, 0.16)' : 'transparent',
+                  })}
+                >
+                  {link.label}
+                </NavLink>
+              ))}
+            </Flex>
+          </Flex>
           <Flex align="center" gap={16}>
             <ReportIssueModal />
             <Text style={{ color: token.colorTextLightSolid, opacity: 0.85 }}>{email}</Text>
@@ -118,6 +145,7 @@ function App() {
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<AuthGuard />}>
         <Route index element={<InventoryPage />} />
+        <Route path="mission-control" element={<MissionControlPage />} />
       </Route>
     </Routes>
   )
