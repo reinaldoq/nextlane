@@ -278,10 +278,14 @@ A list hook modeled on `web/src/hooks/useVehicleList.ts` — same shape, swap
 the entity, endpoint, and sort whitelist:
 
 ```ts
+// Mirrors the server's SORT_COLUMNS whitelist in api/_lib/parts.py — keep in sync.
 export const SORT_FIELDS = ['created_at', 'price_cents', 'qty_on_hand'] as const
 // ...same useEffect/AbortController pattern as useVehicleList, calling
 // api.get<ListResponse<Part>>('/api/parts', { q, sort, limit, offset }, signal)
 ```
+
+(Convention 8: any client-side mirror of a server rule carries a
+`keep in sync with <file>` comment — the server stays the enforcer.)
 
 A page component modeled on `web/src/pages/InventoryPage.tsx`: an Antd
 `Table<Part>` with server-driven search/sort/pagination, a "New part"
@@ -311,6 +315,11 @@ Model directly on `tests/test_vehicles_api.py`: the 2-line `_clean`
 verb, parametrized 422 cases, a duplicate-sku 409 test, sort/whitelist
 tests (including the unknown-sort-field-returns-422 case), and pagination
 tests.
+
+The shared `clean` fixture truncates every table in the public schema
+dynamically, so your new `parts` table is cleaned between tests
+automatically — no edit to `tests/conftest.py` is needed. (This is why the
+list/pagination tests can safely assert exact `total` counts.)
 
 ```python
 import uuid
