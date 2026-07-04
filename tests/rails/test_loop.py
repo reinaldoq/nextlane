@@ -22,6 +22,7 @@ import typer
 from rails.adapters.base import SessionError
 from rails.agents.loop import (
     CHECKLIST,
+    parse_retro_lessons,
     parse_verdict,
     run_agent_task,
     slug_from,
@@ -320,6 +321,42 @@ def test_verdict_hostile_prompt_text_is_not_what_gets_parsed():
     assert parse_verdict(real_reviewer_response) == "REQUEST_CHANGES"
 
 
+# === retro lesson parser ===================================================
+
+
+def test_parse_retro_lessons_none_token_returns_empty():
+    assert parse_retro_lessons("NONE") == []
+    assert parse_retro_lessons("none") == []
+    assert parse_retro_lessons("  None  \n") == []
+
+
+def test_parse_retro_lessons_empty_message_returns_empty():
+    assert parse_retro_lessons("") == []
+    assert parse_retro_lessons("   ") == []
+
+
+def test_parse_retro_lessons_parses_dash_bullets():
+    text = "- Lesson one because reason\n- Lesson two because reason"
+    assert parse_retro_lessons(text) == ["Lesson one because reason", "Lesson two because reason"]
+
+
+def test_parse_retro_lessons_caps_at_three():
+    text = "\n".join(f"- lesson {i}" for i in range(5))
+    lessons = parse_retro_lessons(text)
+    assert len(lessons) == 3
+    assert lessons == ["lesson 0", "lesson 1", "lesson 2"]
+
+
+def test_parse_retro_lessons_prose_fallback_when_no_bullets():
+    text = "Watch out for X.\nAlso Y matters a lot."
+    assert parse_retro_lessons(text) == ["Watch out for X.", "Also Y matters a lot."]
+
+
+def test_parse_retro_lessons_strips_numbered_prefixes():
+    text = "1. Lesson one\n2) Lesson two"
+    assert parse_retro_lessons(text) == ["Lesson one", "Lesson two"]
+
+
 # === slug_from ============================================================
 
 
@@ -445,7 +482,13 @@ def test_gate_red_then_green_on_retry(monkeypatch):
     cfg = make_config()
 
     run = run_agent_task(
-        cfg, task_kind="feature", task_body="x", title="feat: x", max_retries=2, **kwargs
+        cfg,
+        task_kind="feature",
+        task_body="x",
+        title="feat: x",
+        max_retries=2,
+        retro=False,  # unrelated to the flywheel -- keep this test's call count focused
+        **kwargs,
     )
 
     assert run.retries == 1
@@ -501,7 +544,9 @@ def test_review_requests_changes_then_final_review_approves_verdict_recorded(mon
     )
     cfg = make_config()
 
-    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", retro=False, **kwargs
+    )
 
     assert run.outcome == "pr_opened"
     assert run.review_verdict == "APPROVE"
@@ -536,7 +581,9 @@ def test_review_requests_changes_then_final_review_still_requests_changes(monkey
     )
     cfg = make_config()
 
-    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", retro=False, **kwargs
+    )
 
     assert run.outcome == "pr_opened"  # green final gate still opens; human reviews it
     assert run.review_verdict == "REQUEST_CHANGES"
@@ -583,7 +630,9 @@ def test_hostile_diff_content_not_parsed_as_reviewer_verdict(monkeypatch):
     )
     cfg = make_config()
 
-    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", retro=False, **kwargs
+    )
 
     # a revision cycle kicked in because the recorded verdict is
     # REQUEST_CHANGES, not APPROVE -- proving the diff's planted text was
@@ -626,7 +675,9 @@ def test_cost_summed_across_builder_retry_and_reviewer_sessions(monkeypatch):
     )
     cfg = make_config()
 
-    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", retro=False, **kwargs
+    )
 
     assert run.cost_usd == pytest.approx(0.35)
 
@@ -1057,6 +1108,261 @@ def test_ok_session_without_explicit_result_emits_warning(monkeypatch):
 
     assert run.outcome == "pr_opened"  # a warning, not a failure
     assert "no terminal result event" in fakes["console"].text
+
+
+# === self-improvement flywheel: _read_learnings seam ========================
+
+
+def test_read_learnings_returns_file_content(tmp_path):
+    from rails.agents.loop import _read_learnings
+
+    (tmp_path / "rails").mkdir()
+    (tmp_path / "rails" / "LEARNINGS.md").write_text("# LEARNINGS\n- lesson one\n")
+
+    assert _read_learnings(tmp_path) == "# LEARNINGS\n- lesson one\n"
+
+
+def test_read_learnings_returns_none_when_file_missing(tmp_path):
+    from rails.agents.loop import _read_learnings
+
+    assert _read_learnings(tmp_path) is None
+
+
+# === self-improvement flywheel: LEARNINGS injected into every prompt ========
+
+
+def test_original_prompt_includes_learnings_when_present(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(
+        "rails.agents.loop._read_learnings",
+        lambda repo_root: "- Always register literal routes before parameterized ones.",
+    )
+    cfg = make_config()
+
+    run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    prompt = fakes["builder"].calls[0]["prompt"]
+    assert "Always register literal routes before parameterized ones." in prompt
+
+
+def test_original_prompt_omits_learnings_section_when_file_absent(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr("rails.agents.loop._read_learnings", lambda repo_root: None)
+    cfg = make_config()
+
+    run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    prompt = fakes["builder"].calls[0]["prompt"]
+    assert "Accumulated lessons" not in prompt
+
+
+def test_read_learnings_is_called_with_repo_root(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    seen = {}
+
+    def fake_read_learnings(repo_root):
+        seen["repo_root"] = repo_root
+        return None
+
+    monkeypatch.setattr("rails.agents.loop._read_learnings", fake_read_learnings)
+    cfg = make_config(repo_root=Path("/repo"))
+
+    run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert seen["repo_root"] == Path("/repo")
+
+
+# === self-improvement flywheel: per-run retro proposes LEARNINGS ============
+
+
+def test_retro_runs_after_pr_opened_and_lessons_land_in_pr_body_and_journal(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="Implemented the thing."),
+            make_session(final_message="- Always do X because Y\n- Watch out for Z"),
+        ],
+        reviewer_responses=[make_session(final_message="LGTM.\n\nVERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"
+    assert run.proposed_learnings == ["Always do X because Y", "Watch out for Z"]
+    assert len(fakes["builder"].calls) == 2  # builder session + retro session (same engine)
+    body = fakes["open_pr_fn"].calls[0]["body"]
+    assert "## Proposed LEARNINGS" in body
+    assert "human-gated" in body
+    assert "Always do X because Y" in body
+    assert "Watch out for Z" in body
+    assert fakes["recorder"].records == [run]
+
+
+def test_retro_session_is_constructed_readonly(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(), make_session(final_message="- a lesson")],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    calls = fakes["make_adapter"].calls
+    claude_calls = [c for c in calls if c["engine"] == "claude"]
+    # first claude call is the (write) builder session, LAST is the retro
+    # session -- both must exist, and the retro one must be readonly.
+    assert claude_calls[0]["readonly"] is False
+    assert claude_calls[-1]["readonly"] is True
+
+
+def test_retro_none_response_yields_no_proposed_learnings_and_no_pr_section(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(), make_session(final_message="NONE")],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.proposed_learnings == []
+    body = fakes["open_pr_fn"].calls[0]["body"]
+    assert "Proposed LEARNINGS" not in body
+
+
+def test_retro_skipped_with_retro_false(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", retro=False, **kwargs
+    )
+
+    assert run.proposed_learnings == []
+    assert len(fakes["builder"].calls) == 1  # no retro session spawned
+    body = fakes["open_pr_fn"].calls[0]["body"]
+    assert "Proposed LEARNINGS" not in body
+
+
+def test_retro_not_run_on_gate_failed(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(False)],  # every gate check red
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit):
+        run_agent_task(
+            cfg, task_kind="feature", task_body="x", title="feat: x", max_retries=0, **kwargs
+        )
+
+    assert fakes["recorder"].records[-1].outcome == "gate_failed"
+    assert fakes["recorder"].records[-1].proposed_learnings == []
+    assert len(fakes["builder"].calls) == 1  # only the failed build attempt, no retro
+
+
+def test_retro_not_run_on_completed_no_pr(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", open_pr=False, **kwargs
+    )
+
+    assert run.outcome == "completed_no_pr"
+    assert run.proposed_learnings == []
+    assert len(fakes["builder"].calls) == 1  # no retro session
+
+
+def test_retro_session_error_is_swallowed_run_still_succeeds(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="Implemented."),
+            SessionError("claude retro session crashed"),
+        ],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"
+    assert run.proposed_learnings == []
+    assert len(fakes["open_pr_fn"].calls) == 1
+    body = fakes["open_pr_fn"].calls[0]["body"]
+    assert "Proposed LEARNINGS" not in body
+    assert "retro" in fakes["console"].text.lower()
+
+
+def test_cost_summed_includes_retro_session(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(cost_usd=0.10),
+            make_session(cost_usd=0.05, final_message="- a lesson"),
+        ],
+        reviewer_responses=[make_session(cost_usd=0.02, final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.cost_usd == pytest.approx(0.17)
+
+
+def test_retro_prompt_includes_diff_and_review_verdict(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="Implemented."),
+            make_session(final_message="- a lesson"),
+        ],
+        reviewer_responses=[make_session(final_message="Nice work.\n\nVERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        diff_text="diff --git a/foo b/foo\n+DISTINCTIVE_DIFF_MARKER\n",
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    retro_prompt = fakes["builder"].calls[-1]["prompt"]
+    assert "DISTINCTIVE_DIFF_MARKER" in retro_prompt
+    assert "VERDICT: APPROVE" in retro_prompt
 
 
 # === M1: retry prompt recomposed from the ORIGINAL, not nested ==============

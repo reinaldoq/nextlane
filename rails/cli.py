@@ -51,10 +51,19 @@ def build_feature(
             "branch in place under .worktrees/ for inspection (they are NOT cleaned up)."
         ),
     ),
+    retro: bool = typer.Option(
+        True,
+        "--retro/--no-retro",
+        help=(
+            "Self-improvement flywheel: after a PR opens, run one extra read-only session "
+            "that proposes 0-3 generalizable lessons into the PR body for human review "
+            "(never auto-written to rails/LEARNINGS.md). --no-retro skips it."
+        ),
+    ),
 ) -> None:
     """Drive a headless agent session to implement a feature end-to-end."""
     cfg = RailsConfig.load()
-    _build_feature(cfg, spec, engine=engine, reviewer=reviewer, open_pr=not no_pr)
+    _build_feature(cfg, spec, engine=engine, reviewer=reviewer, open_pr=not no_pr, retro=retro)
 
 
 @app.command()

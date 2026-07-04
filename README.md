@@ -105,6 +105,16 @@ banners as it runs, a tailable transcript per session under
 opened, gate failed, review rejected, or errored — is journaled to
 [`rails/journal/runs.jsonl`](rails/journal/runs.jsonl).
 
+**Self-improvement flywheel:** the rails also learn, run over run. Every
+prompt is seeded with [`rails/LEARNINGS.md`](rails/LEARNINGS.md), a small,
+committed, **human-curated** file of accumulated lessons
+(`rails.prompts.compose`'s `learnings` section). After a PR opens, one
+extra, read-only **retro** session reflects on that run's own diff and
+review and proposes 0-3 new, generalizable lessons — never auto-applied.
+They land in the PR's "Proposed LEARNINGS" section and in the journal
+(`proposed_learnings`) purely as a suggestion; a human decides whether to
+fold one into `rails/LEARNINGS.md` when merging. `--no-retro` skips it.
+
 **Proof it's real:** two cross-vendor dogfood runs have merged through this
 exact loop —
 [#18](https://github.com/reinaldoq/nextlane/pull/18) (Claude built a

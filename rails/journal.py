@@ -67,7 +67,8 @@ class RunRecord:
       - fields added in a future phase can likewise be declared with defaults
         so both old and new code read each other's rows.
     Bump it whenever the set of fields changes in a way readers must know
-    about. Bumped to 2 in Task 6 for `transcript_paths` / `review_verdict`.
+    about. Bumped to 2 in Task 6 for `transcript_paths` / `review_verdict`;
+    bumped to 3 for the self-improvement flywheel's `proposed_learnings`.
     """
 
     ts_iso: str
@@ -86,7 +87,14 @@ class RunRecord:
     # fills the field default / default_factory for whichever is missing).
     transcript_paths: list[str] = field(default_factory=list)
     review_verdict: str | None = None
-    schema_version: int = 2
+    # Self-improvement flywheel: 0-3 lessons the per-run retro session
+    # PROPOSED (never auto-applied -- a human curates rails/LEARNINGS.md by
+    # hand from these). Empty for every non-pr_opened outcome and for
+    # pr_opened runs where retro was skipped (--no-retro), errored, or
+    # genuinely had nothing generalizable to propose (see
+    # rails.agents.loop.run_agent_task).
+    proposed_learnings: list[str] = field(default_factory=list)
+    schema_version: int = 3
 
     def __post_init__(self) -> None:
         if self.outcome not in VALID_OUTCOMES:
@@ -134,6 +142,7 @@ class RunRecord:
         outcome: str,
         transcript_paths: list[str] | None = None,
         review_verdict: str | None = None,
+        proposed_learnings: list[str] | None = None,
     ) -> RunRecord:
         """Build a RunRecord, stamping `ts_iso` with the current UTC time.
 
@@ -160,6 +169,7 @@ class RunRecord:
             outcome=outcome,
             transcript_paths=transcript_paths if transcript_paths is not None else [],
             review_verdict=review_verdict,
+            proposed_learnings=proposed_learnings if proposed_learnings is not None else [],
         )
 
 
