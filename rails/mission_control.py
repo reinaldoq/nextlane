@@ -18,6 +18,11 @@ is never pointed at local Supabase for this). Never exercised with real
 credentials in CI: `tests/rails/test_mission_control.py` injects a fake
 `opener` for every call.
 
+Tests never touch the real network here even when a caller (like
+`rails.agents.loop`) relies on the `opener` DEFAULT rather than passing its
+own: `tests/rails/conftest.py` has an autouse fixture that neutralizes that
+default for every test under `tests/rails/`, regardless of environment.
+
 CRITICAL: this module intentionally RAISES `MissionControlError` (missing
 env) same as it lets an opener's network failure propagate -- it does NOT
 swallow anything itself. Best-effort/non-fatal behavior is the CALLER's

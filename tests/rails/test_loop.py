@@ -12,6 +12,7 @@ a RecordingConsole so banners can be asserted -- all done by
 
 from __future__ import annotations
 
+import http.client
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1617,6 +1618,89 @@ def test_mission_control_finish_run_raising_is_non_fatal_run_object_still_return
     assert run.pr_url == fakes["open_pr_fn"].url
     assert len(mc.finish_calls) == 1
     assert "mission control" in fakes["console"].text.lower()
+
+
+# === regression: Mission Control emission never touches the real network ===
+#
+# The production incident this guards against: a REAL `rails` run's GATE step
+# shells out to `uv run pytest -q` (see `rails.gate`), which inherits the
+# calling process's environment -- and the repo's `justfile` sets
+# `dotenv-load := true`, so EVERY `just` recipe (including `just gate`, which
+# a real run's builder/reviewer sessions are told to run themselves) now
+# auto-loads the repo's `.env`. That `.env` carries the REAL hosted
+# `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` (needed for other local dev
+# workflows). So, unlike a bare developer shell (where these are normally
+# unset and every test above this comment relies on that to stay silent),
+# pytest's OWN run of `tests/rails/test_loop.py` during a real gate executes
+# with real hosted credentials present -- and `_mc_start_run`/`_mc_step`/
+# `_mc_finish` call `rails.mission_control` with NO `opener` override, so
+# they fall through to its real default (`urllib.request.urlopen`) and made
+# ~40 real PostgREST POSTs of this file's test-fixture data into the HOSTED
+# `agent_runs`/`run_steps` tables every time -- confirmed live: one real run
+# injected 43 junk rows into the deployed `/mission-control` dashboard.
+#
+# The fix is `tests/rails/conftest.py`'s autouse fixture, which neutralizes
+# `rails.mission_control`'s `opener` DEFAULT for every test in `tests/rails/`
+# regardless of environment -- so this test must stay green with the hosted
+# credentials genuinely present in `os.environ`.
+
+
+def test_mission_control_emission_never_touches_real_network_even_with_creds_set(monkeypatch):
+    """Regression test for the prod-DB-pollution bug (see comment above).
+
+    Deliberately does NOT patch `rails.mission_control.start_run`/`add_step`/
+    `finish_run` itself (every other Mission Control test above does that) --
+    this test exercises the REAL `rails.mission_control` module through
+    `run_agent_task`'s default wiring, exactly like a real gate run's pytest
+    does, to prove the test-isolation fix (not a test-local fake) is what
+    keeps this safe.
+
+    The sentinel is planted one layer BELOW `urllib.request.urlopen`, at
+    `http.client.HTTP(S)Connection.request` -- the real primitive any actual
+    network attempt must reach before it ever opens a socket. This is
+    intentional: `rails.mission_control`'s `opener` keyword defaults to
+    `urllib.request.urlopen` as a plain default-argument VALUE, bound once
+    when the module is first imported. Patching the `urllib.request.urlopen`
+    attribute afterwards would never be reached by an already-bound default
+    and would prove nothing either way; patching one level below is reached
+    by a real attempt no matter which mechanism (or lack of one) is used to
+    try to neutralize it, so this test is a genuine, fix-mechanism-agnostic
+    proof that no real network I/O was attempted -- never an actual
+    connection to the hosted project, whether the fix is present or not.
+    """
+    monkeypatch.setenv("SUPABASE_URL", "https://example-hosted-project.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "not-a-real-key")
+
+    real_network_attempts: list[tuple] = []
+
+    def _sentinel_request(self, *args, **kwargs):
+        real_network_attempts.append((args, kwargs))
+        raise AssertionError("real network call in a test!")
+
+    monkeypatch.setattr(http.client.HTTPConnection, "request", _sentinel_request)
+    monkeypatch.setattr(http.client.HTTPSConnection, "request", _sentinel_request)
+
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(final_message="Implemented the thing.")],
+        reviewer_responses=[make_session(final_message="LGTM.\n\nVERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg,
+        task_kind="feature",
+        task_body="add a widget",
+        title="feat: add a widget",
+        retro=False,
+        **kwargs,
+    )
+
+    assert run.outcome == "pr_opened"
+    # THE regression assertion: no code path reached the real network, even
+    # though hosted credentials were genuinely present in the environment.
+    assert real_network_attempts == []
 
 
 # === M1: retry prompt recomposed from the ORIGINAL, not nested ==============
