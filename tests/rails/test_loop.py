@@ -172,6 +172,17 @@ class FakeCleanup:
             raise self.error
 
 
+@dataclass
+class FakeAutoCommit:
+    """Records every `_auto_commit(wt_path, message=...)` call -- the
+    injected seam for the auto-commit rescue path (never real git)."""
+
+    calls: list[dict] = field(default_factory=list)
+
+    def __call__(self, wt_path, *, message):
+        self.calls.append({"wt_path": wt_path, "message": message})
+
+
 def make_worktree_cm(branch: str = "rails/fake-task-abc123"):
     entered: list[Worktree] = []
     exited: list[BaseException | None] = []
@@ -223,6 +234,7 @@ def make_runner_kwargs(
     worktree_cm=None,
     diff_text="diff --git a/foo b/foo\n+bar\n",
     count=1,
+    dirty=False,
     monkeypatch,
 ):
     builder = FakeAdapter(name="claude", responses=builder_responses)
@@ -234,9 +246,12 @@ def make_runner_kwargs(
     cleanup_fn = cleanup_fn or FakeCleanup()
     console = RecordingConsole()
     make_adapter = make_adapters(builder, reviewer)
+    auto_commit_fn = FakeAutoCommit()
 
     monkeypatch.setattr("rails.agents.loop._diff", lambda wt_path, base="main": diff_text)
     monkeypatch.setattr("rails.agents.loop._count_commits", lambda wt_path, base="main": count)
+    monkeypatch.setattr("rails.agents.loop._has_uncommitted_changes", lambda wt_path: dirty)
+    monkeypatch.setattr("rails.agents.loop._auto_commit", auto_commit_fn)
     monkeypatch.setattr("rails.agents.loop.cleanup", cleanup_fn)
     monkeypatch.setattr("rails.agents.loop.err_console", console)
 
@@ -258,6 +273,7 @@ def make_runner_kwargs(
         cleanup_fn=cleanup_fn,
         console=console,
         make_adapter=make_adapter,
+        auto_commit_fn=auto_commit_fn,
     )
 
 
@@ -823,11 +839,14 @@ def test_cleanup_failure_on_happy_path_still_pr_opened_and_summary_printed(monke
 
 
 def test_empty_branch_after_green_gate_is_no_changes_and_skips_review(monkeypatch):
+    """Genuine no_changes: zero commits AND a clean tree (nothing left
+    uncommitted either) -- the agent truly did nothing. Unchanged behavior."""
     kwargs, fakes = make_runner_kwargs(
         builder_responses=[make_session()],
         reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
         gate_results=[_gate(True)],
         count=0,  # zero commits on the branch
+        dirty=False,  # ...and nothing uncommitted to rescue either
         monkeypatch=monkeypatch,
     )
     cfg = make_config()
@@ -839,6 +858,75 @@ def test_empty_branch_after_green_gate_is_no_changes_and_skips_review(monkeypatc
     assert fakes["recorder"].records[-1].outcome == "no_changes"
     assert len(fakes["reviewer"].calls) == 0  # reviewer never runs
     assert len(fakes["open_pr_fn"].calls) == 0
+    assert len(fakes["auto_commit_fn"].calls) == 0  # nothing to rescue
+
+
+# === auto-commit rescue: zero commits BUT uncommitted work left behind =====
+
+
+def test_no_commits_but_uncommitted_changes_auto_commits_then_pr_opened(monkeypatch):
+    """The dogfood-surfaced bug: a real Claude session edited files, made the
+    gate green, but never ran `git commit`. Zero commits + a dirty tree must
+    trigger an auto-commit rescue (not a discarded no_changes), after which
+    the loop proceeds through review to a normal PR."""
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(engine="claude", final_message="Implemented but forgot to commit.")
+        ],
+        reviewer_responses=[
+            make_session(engine="codex", final_message="LGTM.\n\nVERDICT: APPROVE")
+        ],
+        gate_results=[_gate(True)],
+        count=0,  # the agent never committed...
+        dirty=True,  # ...but left real, uncommitted edits in the worktree
+        monkeypatch=monkeypatch,
+    )
+    auto_commit_fn = fakes["auto_commit_fn"]
+
+    # _count_commits is queried again AFTER the rescue commit -- a stateful
+    # fake mirrors real git's behavior (0 before the commit, >0 after),
+    # driven by whether the auto_commit fake has actually been invoked.
+    def _count_commits_reflecting_rescue(wt_path, base="main"):
+        return 1 if auto_commit_fn.calls else 0
+
+    monkeypatch.setattr("rails.agents.loop._count_commits", _count_commits_reflecting_rescue)
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="add a widget", title="feat: add a widget", **kwargs
+    )
+
+    assert run.outcome == "pr_opened"
+    assert len(auto_commit_fn.calls) == 1
+    message = auto_commit_fn.calls[0]["message"]
+    assert message.startswith("feat: add a widget")
+    assert "claude builder session" in message
+    assert "auto-committed by nextlane-rails" in message
+    assert "Co-Authored-By: claude via nextlane-rails <noreply@nextlane.dev>" in message
+    assert "auto-committing uncommitted session work" in fakes["console"].text
+    assert len(fakes["reviewer"].calls) == 1  # review + PR proceed normally
+    assert len(fakes["open_pr_fn"].calls) == 1
+
+
+def test_agent_committed_own_work_auto_commit_path_not_taken(monkeypatch):
+    """count > 0 (the agent DID commit itself) must never trigger the
+    auto-commit rescue, even if the tree also happens to be dirty (e.g. a
+    leftover scratch file after a real commit) -- existing flow unchanged."""
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(final_message="Committed my own work.")],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        count=1,
+        dirty=True,
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"
+    assert len(fakes["auto_commit_fn"].calls) == 0
+    assert "auto-committing" not in fakes["console"].text
 
 
 # === I3: reviewer adapter is constructed read-only ==========================

@@ -133,6 +133,17 @@ def test_compose_forbids_pushing_and_touching_rails_dir():
     assert "rails/" in prompt
 
 
+def test_compose_emphasizes_committing_is_mandatory():
+    """Task 9 dogfood bug: a real session edited files, passed the gate, but
+    never ran `git commit` -- the loop now auto-commits on the agent's
+    behalf as a safety net, but the prompt must still push the agent to
+    commit its own, focused work rather than relying on the rescue."""
+    prompt = compose("build-feature", "do the thing", engine_label="Claude (rails)")
+
+    assert "You MUST commit your work with git before finishing" in prompt
+    assert "auto-committed" in prompt.lower()
+
+
 # --- compose_retry ----------------------------------------------------------
 
 

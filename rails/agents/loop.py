@@ -10,10 +10,12 @@ Determinism/testability: every side-effecting collaborator is an injected
 parameter with a real-world default (`make_adapter`, `run_gate_fn`,
 `worktree_cm`, `open_pr_fn`, `record_fn`, `now_fn`) -- unit tests pass fakes
 for ALL of them, so the whole loop is exercised without ever spawning a real
-engine CLI, touching real git remotes, or shelling out to `gh`. The two
-un-injected, git-touching helpers are `_diff` (a `git diff`) and
-`_count_commits` (a `git rev-list --count`); tests monkeypatch
-`rails.agents.loop._diff` / `._count_commits` directly rather than threading
+engine CLI, touching real git remotes, or shelling out to `gh`. The
+un-injected, git-touching helpers are `_diff` (a `git diff`),
+`_count_commits` (a `git rev-list --count`), `_has_uncommitted_changes` (a
+`git status --porcelain`), and `_auto_commit` (a `git add -A && git commit`);
+tests monkeypatch `rails.agents.loop._diff` / `._count_commits` /
+`._has_uncommitted_changes` / `._auto_commit` directly rather than threading
 them through the public signature.
 
 Operational visibility (Task 6 review round): a real run is 10-30 minutes of
@@ -27,6 +29,15 @@ Robustness invariants:
 - **PR opens ONLY on a green final gate.** A red gate (initial, exhausted
   retry, or post-revision), an empty branch, a SessionError, a blown budget,
   or a GitHubError all end in a journaled terminal record and a non-PR exit.
+- **A green gate's work is never discarded just because nobody ran `git
+  commit`.** Headless coding agents (Task 9's first live dogfood run: a real
+  212s Claude session, gate green, zero commits) frequently edit files
+  without committing them. When the branch has zero commits AND the worktree
+  is dirty, the loop auto-commits the session's work itself (see
+  `_auto_commit`) before falling through to the existing empty-diff check --
+  only a branch with BOTH zero commits AND a clean tree is genuine
+  `no_changes`. An agent that already committed its own work is never
+  touched by this path.
 - A `SessionError` (timeout / spawn / capture failure from an adapter) is
   caught, journaled as outcome="error" with the transcripts collected so far
   plus the failing session's partial transcript, and re-raised as
@@ -184,6 +195,47 @@ def _count_commits(wt_path: Path, *, base: str = "main") -> int:
         check=True,
     )
     return int(result.stdout.strip() or "0")
+
+
+def _has_uncommitted_changes(wt_path: Path) -> bool:
+    """Whether the worktree has ANY uncommitted content -- staged, unstaged,
+    or untracked (`git status --porcelain`, non-empty output). Used only to
+    decide whether a zero-commit branch is a genuine `no_changes` (agent did
+    nothing at all) or a rescue-worthy `no_changes`-that-isn't (agent left
+    real, uncommitted edits behind -- see the auto-commit rescue in
+    `run_agent_task`)."""
+    result = subprocess.run(
+        ["git", "-C", str(wt_path), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    return bool(result.stdout.strip())
+
+
+def _auto_commit(wt_path: Path, *, message: str) -> None:
+    """`git add -A && git commit -m message` inside the worktree -- the
+    rescue path for a session that made real, gate-passing edits but never
+    ran `git commit` itself. Stages EVERYTHING (`-A`), matching what an
+    agent's own `git add -A && git commit` would have done."""
+    subprocess.run(
+        ["git", "-C", str(wt_path), "add", "-A"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(wt_path), "commit", "-m", message],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
 
 
 def _compose_revision(original_prompt: str, review_feedback: str) -> str:
@@ -394,8 +446,27 @@ def run_agent_task(
             err_console.print(gate_result.summary())
             raise typer.Exit(1)
 
-        # --- I2: empty-diff guard. A green gate on a branch with ZERO
-        # commits means the agent did nothing worth reviewing/PRing.
+        # --- auto-commit rescue: a green gate proves the session's edits are
+        # valid, but headless coding agents frequently forget to `git
+        # commit` even though they left real work in the worktree (the Task
+        # 9 dogfood bug this guards against). Only trigger when the branch
+        # truly has zero commits AND there is uncommitted content to rescue
+        # -- an agent that already committed its own work must never take
+        # this path (the `and` short-circuits before `_has_uncommitted_changes`
+        # even runs).
+        if _count_commits(wt.path) == 0 and _has_uncommitted_changes(wt.path):
+            _phase("▶ auto-committing uncommitted session work (agent left it uncommitted)")
+            commit_message = (
+                f"{title}\n\n"
+                f"Work produced by the {engine} builder session and auto-committed by "
+                "nextlane-rails because the session left it uncommitted.\n\n"
+                f"Co-Authored-By: {engine} via nextlane-rails <noreply@nextlane.dev>"
+            )
+            _auto_commit(wt.path, message=commit_message)
+
+        # --- I2: empty-diff guard. A green gate on a branch with STILL zero
+        # commits (even after the auto-commit rescue above) means the agent
+        # truly did nothing worth reviewing/PRing.
         if _count_commits(wt.path) == 0:
             _phase(
                 "[bold red]✗ gate is green but the branch has no commits -- "
