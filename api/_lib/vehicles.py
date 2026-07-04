@@ -52,7 +52,21 @@ class StatusIn(BaseModel):
 def _parse_sort(sort: str) -> str:
     field, _, direction = sort.partition(":")
     if field not in SORT_COLUMNS or direction not in SORT_DIRECTIONS:
-        raise api_error(422, "validation_error", "invalid sort", details={"sort": sort})
+        # Enumerate the whitelist in the error so an external caller that sent an
+        # unsupported field/direction can self-correct without guessing.
+        allowed_fields = sorted(SORT_COLUMNS)
+        allowed_directions = sorted(SORT_DIRECTIONS)
+        raise api_error(
+            422,
+            "validation_error",
+            f"invalid sort '{sort}'; expected '<field>:<direction>' where field is one "
+            f"of {allowed_fields} and direction is one of {allowed_directions}",
+            details={
+                "sort": sort,
+                "allowed_fields": allowed_fields,
+                "allowed_directions": allowed_directions,
+            },
+        )
     # id tiebreaker keeps pagination stable when rows tie on the sort key.
     return f"{field} {direction}, id desc"
 
