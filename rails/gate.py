@@ -30,15 +30,22 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-_TAIL_CHARS = 2000
+_DEFAULT_TAIL_CHARS = 2000
+
+# Per-step output-tail budget (chars), keyed by step name; steps not listed
+# use _DEFAULT_TAIL_CHARS. pytest gets a bigger tail so a failing assertion
+# plus its (short) traceback survives truncation into the retry prompt --
+# 2000 chars is easily blown past by a single pytest failure's context.
+_STEP_TAIL_CHARS: dict[str, int] = {"pytest": 6000}
 
 # Mirrors the justfile's `gate` recipe (lint + test + web build), as
 # discrete argv steps rather than a single `just gate` shell-out, so each
-# one gets its own structured StepResult.
+# one gets its own structured StepResult. pytest runs with --tb=short so the
+# tail carries the actual assertion message, not a truncated long traceback.
 DEFAULT_STEPS: tuple[tuple[str, list[str]], ...] = (
     ("ruff-check", ["uv", "run", "ruff", "check", "."]),
     ("ruff-format", ["uv", "run", "ruff", "format", "--check", "."]),
-    ("pytest", ["uv", "run", "pytest", "-q"]),
+    ("pytest", ["uv", "run", "pytest", "-q", "--tb=short"]),
     ("web-lint", ["npm", "--prefix", "web", "run", "lint"]),
     ("web-typecheck", ["npm", "--prefix", "web", "run", "typecheck"]),
     ("web-build", ["npm", "--prefix", "web", "run", "build"]),
@@ -51,7 +58,7 @@ class StepResult:
     ok: bool
     exit_code: int
     duration_s: float
-    output_tail: str  # last ~2000 chars of combined stdout+stderr
+    output_tail: str  # last N chars of stdout+stderr (per-step budget: _STEP_TAIL_CHARS)
 
 
 @dataclass(frozen=True)
@@ -86,6 +93,7 @@ def _run_step(
     cwd: Path,
     env: dict[str, str] | None,
     timeout_s: float,
+    tail_chars: int,
 ) -> StepResult:
     start = time.monotonic()
     try:
@@ -106,13 +114,13 @@ def _run_step(
             ok=result.returncode == 0,
             exit_code=result.returncode,
             duration_s=time.monotonic() - start,
-            output_tail=output[-_TAIL_CHARS:],
+            output_tail=output[-tail_chars:],
         )
     except subprocess.TimeoutExpired as exc:
         output = exc.output or ""
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="replace")
-        tail = output[-_TAIL_CHARS:] if output else ""
+        tail = output[-tail_chars:] if output else ""
         return StepResult(
             name=name,
             ok=False,
@@ -162,6 +170,15 @@ def run_gate(
                 )
             )
             continue
-        results.append(_run_step(name, argv, cwd=cwd, env=merged_env, timeout_s=budget_remaining))
+        results.append(
+            _run_step(
+                name,
+                argv,
+                cwd=cwd,
+                env=merged_env,
+                timeout_s=budget_remaining,
+                tail_chars=_STEP_TAIL_CHARS.get(name, _DEFAULT_TAIL_CHARS),
+            )
+        )
 
     return GateResult(ok=all(step.ok for step in results), steps=tuple(results))

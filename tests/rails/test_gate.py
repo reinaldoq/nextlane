@@ -124,12 +124,58 @@ def test_output_tail_is_truncated_to_last_2000_chars(tmp_path):
     assert result.steps[0].output_tail.rstrip().endswith("x")
 
 
+def test_pytest_step_keeps_larger_tail_budget(tmp_path):
+    """A step NAMED 'pytest' gets a 6000-char tail so a failing assertion +
+    short traceback survives truncation for the retry prompt; a non-pytest
+    step emitting the same volume stays clamped to the 2000 default."""
+    big = "print('y' * 8000)"
+    steps = (
+        ("pytest", _py(big)),
+        ("ruff-check", _py(big)),
+    )
+
+    result = run_gate(tmp_path, steps=steps)
+
+    pytest_tail = result.steps[0].output_tail
+    ruff_tail = result.steps[1].output_tail
+    assert 2000 < len(pytest_tail) <= 6000
+    assert len(ruff_tail) <= 2000
+
+
 def test_env_param_is_passed_to_steps(tmp_path):
     steps = (("env-check", _py("import os; print(os.environ.get('RAILS_TEST_VAR', 'MISSING'))")),)
 
     result = run_gate(tmp_path, steps=steps, env={"RAILS_TEST_VAR": "hello"})
 
     assert "hello" in result.steps[0].output_tail
+
+
+def test_env_merge_preserves_inherited_os_environ(tmp_path, monkeypatch):
+    """The env merge is {**os.environ, **env}, NOT a replace: a caller
+    passing env extras must NOT wipe out the inherited environment (a replace
+    would drop PATH and break every step). Pin it with a canary in
+    os.environ that must still be visible to a step even when `env` is set."""
+    monkeypatch.setenv("RAILS_INHERITED_CANARY", "still-here")
+    steps = (
+        ("env-check", _py("import os; print(os.environ.get('RAILS_INHERITED_CANARY', 'GONE'))")),
+    )
+
+    result = run_gate(tmp_path, steps=steps, env={"OTHER": "x"})
+
+    assert "still-here" in result.steps[0].output_tail
+
+
+# --- DEFAULT_STEPS argv --------------------------------------------------------
+
+
+def test_default_steps_pytest_uses_tb_short():
+    """The pytest step must pass --tb=short so a failing assertion's actual
+    message survives (a long default traceback would get truncated away from
+    the tail that feeds the retry prompt)."""
+    from rails.gate import DEFAULT_STEPS
+
+    pytest_argv = next(argv for name, argv in DEFAULT_STEPS if name == "pytest")
+    assert "--tb=short" in pytest_argv
 
 
 # --- total_timeout_s enforcement ---------------------------------------------

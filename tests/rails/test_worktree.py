@@ -27,6 +27,12 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _branches(repo: Path, pattern: str = "rails/*") -> list[str]:
+    """rails/* branch refs currently in `repo` (empty list if none)."""
+    out = _git(repo, "branch", "--list", "--format=%(refname:short)", pattern).stdout
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def _init_repo(repo: Path) -> Path:
     repo.mkdir(parents=True, exist_ok=True)
     _git(repo, "init", "-b", "main")
@@ -158,31 +164,68 @@ def test_cleanup_force_removes_worktree_with_uncommitted_changes(scratch_repo):
     assert not wt.path.exists()
 
 
+def test_cleanup_default_leaves_branch(scratch_repo):
+    """`git worktree remove` alone never deletes the branch ref; the default
+    (delete_branch=False) preserves it -- Task 6 pushes the branch before it
+    cleans up, so a successful run keeps its branch."""
+    wt = create("keeps-branch", repo_root=scratch_repo, provision=False)
+
+    cleanup(wt, repo_root=scratch_repo)
+
+    assert not wt.path.exists()
+    assert wt.branch in _branches(scratch_repo)
+
+
+def test_cleanup_delete_branch_removes_worktree_and_branch(scratch_repo):
+    wt = create("no-leak", repo_root=scratch_repo, provision=False)
+    assert wt.branch in _branches(scratch_repo)
+
+    cleanup(wt, repo_root=scratch_repo, delete_branch=True)
+
+    assert not wt.path.exists()
+    assert _branches(scratch_repo) == []  # no leaked rails/* branch ref
+
+
+def test_cleanup_delete_branch_tolerates_already_gone_branch(scratch_repo):
+    wt = create("double-delete", repo_root=scratch_repo, provision=False)
+    cleanup(wt, repo_root=scratch_repo, delete_branch=True)
+    assert _branches(scratch_repo) == []
+
+    # Second call: worktree AND branch already gone -- must not raise.
+    cleanup(wt, repo_root=scratch_repo, delete_branch=True)
+
+
 # --- worktree_for() ----------------------------------------------------------
 
 
-def test_worktree_for_preserves_on_success(scratch_repo):
+def test_worktree_for_preserves_worktree_and_branch_on_success(scratch_repo):
     with worktree_for("keep-me", repo_root=scratch_repo, provision=False) as wt:
         path = wt.path
 
     assert path.is_dir()
+    assert wt.branch in _branches(scratch_repo)  # branch survives for Task 6's push
 
-    cleanup(wt, repo_root=scratch_repo)  # tidy up after ourselves
+    cleanup(wt, repo_root=scratch_repo, delete_branch=True)  # tidy up after ourselves
 
 
-def test_worktree_for_force_removes_on_exception(scratch_repo):
-    captured: dict[str, Path] = {}
+def test_worktree_for_force_removes_worktree_and_branch_on_exception(scratch_repo):
+    """A failed run must leave NO debris behind -- neither the worktree dir
+    nor its branch ref (a leaked rails/* branch would accumulate across
+    failed retries)."""
+    captured: dict[str, object] = {}
 
     with pytest.raises(RuntimeError, match="boom"):
         with worktree_for("blow-up", repo_root=scratch_repo, provision=False) as wt:
             captured["path"] = wt.path
+            captured["branch"] = wt.branch
             raise RuntimeError("boom")
 
     assert not captured["path"].exists()
+    assert captured["branch"] not in _branches(scratch_repo)
 
 
 def test_worktree_for_yields_a_real_worktree(scratch_repo):
     with worktree_for("checked", repo_root=scratch_repo, provision=False) as wt:
         result = _git(wt.path, "rev-parse", "--show-toplevel")
         assert Path(result.stdout.strip()).resolve() == wt.path.resolve()
-        cleanup(wt, repo_root=scratch_repo)
+        cleanup(wt, repo_root=scratch_repo, delete_branch=True)

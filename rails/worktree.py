@@ -22,6 +22,16 @@ gate's web-* steps will then fail loudly in that worktree, which is
 acceptable signal, not silent breakage. The Python side needs no equivalent
 step at all: `uv run` auto-syncs a per-worktree `.venv` against the repo's
 lockfile the first time it's invoked inside the new worktree.
+
+Two forward pointers for later tasks: (1) the symlink assumes `repo_root`'s
+already-installed node_modules matches its own committed lockfile at
+`base_ref` -- if the main checkout's install is stale relative to base_ref,
+the worktree inherits that staleness (fine in practice: base_ref is the same
+tree the operator develops against). (2) Agent tasks that ADD or upgrade web
+dependencies are OUT OF SCOPE for symlink provisioning -- a new dep isn't in
+the shared store, and an `npm install` inside the worktree mutates the main
+checkout's node_modules; Task 9 task selection should avoid web-dependency
+churn, and Task 5/7 carry this constraint into the prompts/AGENTS.md.
 """
 
 from __future__ import annotations
@@ -108,9 +118,23 @@ def _provision(wt: Worktree, *, repo_root: Path) -> None:
         )
 
 
-def cleanup(wt: Worktree, *, repo_root: Path, force: bool = False) -> None:
+def cleanup(
+    wt: Worktree,
+    *,
+    repo_root: Path,
+    force: bool = False,
+    delete_branch: bool = False,
+) -> None:
     """Remove a worktree. Tolerates an already-removed worktree (a repeat
-    call, or the directory having vanished out of band) instead of raising."""
+    call, or the directory having vanished out of band) instead of raising.
+
+    `git worktree remove` deletes the CHECKOUT but never the branch ref, so
+    the default leaves `wt.branch` in place -- Task 6 pushes the branch
+    before it cleans up, so a successful run keeps its branch. Pass
+    `delete_branch=True` to also `git branch -D <wt.branch>` (tolerating an
+    already-gone branch); a failed run uses this so it leaks neither the
+    worktree dir nor a dangling rails/* branch ref.
+    """
     argv = ["git", "-C", str(repo_root), "worktree", "remove", str(wt.path)]
     if force:
         argv.append("--force")
@@ -125,6 +149,18 @@ def cleanup(wt: Worktree, *, repo_root: Path, force: bool = False) -> None:
     if result.returncode != 0 and wt.path.exists():
         raise RuntimeError(f"git worktree remove failed for {wt.path}: {result.stderr.strip()}")
 
+    if delete_branch:
+        # -D (force delete): the branch may be unmerged; that's expected for
+        # a failed run's throwaway branch. returncode ignored -- an
+        # already-gone branch (double cleanup) must not raise.
+        subprocess.run(
+            ["git", "-C", str(repo_root), "branch", "-D", wt.branch],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
 
 @contextmanager
 def worktree_for(
@@ -137,16 +173,18 @@ def worktree_for(
     """Create a worktree for the duration of the block.
 
     Asymmetric cleanup, BY DESIGN: on an EXCEPTION inside the block, the
-    worktree is force-removed -- a failed task run shouldn't leave debris
-    behind. On SUCCESS the worktree is PRESERVED, not cleaned up: Task 6's
-    PR flow needs the branch (and its commits) to survive after this context
-    manager exits, until it's pushed and a PR opened. Callers that want the
-    worktree gone unconditionally must call `cleanup()` themselves once
-    they're done with the branch.
+    worktree is force-removed AND its branch deleted -- a failed task run
+    must leave no debris behind, and a leaked rails/* branch would otherwise
+    accumulate across failed retries. On SUCCESS the worktree AND branch are
+    PRESERVED, not cleaned up: Task 6's PR flow needs the branch (and its
+    commits) to survive after this context manager exits, until it's pushed
+    and a PR opened -- Task 6 then calls `cleanup(delete_branch=True)` itself
+    once the branch is safely on the remote. Callers that want the worktree
+    gone unconditionally must call `cleanup()` themselves.
     """
     wt = create(task_slug, repo_root=repo_root, base_ref=base_ref, provision=provision)
     try:
         yield wt
     except BaseException:
-        cleanup(wt, repo_root=repo_root, force=True)
+        cleanup(wt, repo_root=repo_root, force=True, delete_branch=True)
         raise
