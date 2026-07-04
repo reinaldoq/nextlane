@@ -366,6 +366,9 @@ def test_sum_costs_empty_is_none():
 
 
 def test_happy_path_pr_opened(monkeypatch):
+    """(c) An initial APPROVE never triggers a revision or a second review
+    call -- the bounded final-review cycle only kicks in on REQUEST_CHANGES
+    (see the review-cycle tests below)."""
     kwargs, fakes = make_runner_kwargs(
         builder_responses=[make_session(engine="claude", final_message="Implemented the thing.")],
         reviewer_responses=[
@@ -386,6 +389,7 @@ def test_happy_path_pr_opened(monkeypatch):
     assert run.review_verdict == "APPROVE"
     assert run.pr_url == fakes["open_pr_fn"].url
     assert len(fakes["open_pr_fn"].calls) == 1
+    assert len(fakes["reviewer"].calls) == 1  # (c) initial APPROVE -> reviewer called once
     assert fakes["recorder"].records == [run]
     assert len(fakes["cleanup_fn"].calls) == 1
     assert fakes["cleanup_fn"].calls[0]["delete_branch"] is False
@@ -477,14 +481,20 @@ def test_gate_red_exhausts_retries_raises_exit_and_no_pr(monkeypatch):
 # === review cycle ============================================================
 
 
-def test_review_requests_changes_then_green_pr_opened_verdict_recorded(monkeypatch):
+def test_review_requests_changes_then_final_review_approves_verdict_recorded(monkeypatch):
+    """The honesty fix (audit bug 1): after a REQUEST_CHANGES -> revision ->
+    green-gate cycle, the loop must re-run the reviewer EXACTLY ONCE more on
+    the REVISED diff and record THAT final verdict -- never the stale,
+    pre-revision REQUEST_CHANGES. Here the revision earns a clean final
+    APPROVE, so the journal/PR must say APPROVE, not REQUEST_CHANGES."""
     kwargs, fakes = make_runner_kwargs(
         builder_responses=[
             make_session(final_message="v1"),
             make_session(final_message="v2, addressed feedback"),
         ],
         reviewer_responses=[
-            make_session(final_message="Needs tweaks.\n\nVERDICT: REQUEST_CHANGES")
+            make_session(final_message="Needs tweaks.\n\nVERDICT: REQUEST_CHANGES"),
+            make_session(final_message="Looks good now.\n\nVERDICT: APPROVE"),
         ],
         gate_results=[_gate(True), _gate(True)],  # green initially, green after revision
         monkeypatch=monkeypatch,
@@ -494,10 +504,49 @@ def test_review_requests_changes_then_green_pr_opened_verdict_recorded(monkeypat
     run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
 
     assert run.outcome == "pr_opened"
-    assert run.review_verdict == "REQUEST_CHANGES"
-    assert len(fakes["builder"].calls) == 2  # initial + one revision
-    assert len(fakes["reviewer"].calls) == 1  # review NOT repeated
+    assert run.review_verdict == "APPROVE"
+    assert len(fakes["builder"].calls) == 2  # initial + exactly one revision (bounded)
+    assert len(fakes["reviewer"].calls) == 2  # initial review + exactly one final review
     assert len(fakes["open_pr_fn"].calls) == 1
+    body = fakes["open_pr_fn"].calls[0]["body"]
+    assert "APPROVE" in body
+    assert "REQUEST_CHANGES" not in body
+    # cost is summed across ALL sessions, including the extra final-review one
+    assert run.cost_usd == pytest.approx(0.1 + 0.1 + 0.1 + 0.1)
+
+
+def test_review_requests_changes_then_final_review_still_requests_changes(monkeypatch):
+    """Same bounded cycle, but the revision does NOT fully satisfy the
+    reviewer: the final review still says REQUEST_CHANGES. Per spec, the PR
+    still opens on a green final gate (a human is the merge gate) but the
+    journal AND the PR body must show the honest REQUEST_CHANGES verdict,
+    flagged for human attention -- never silently upgraded and never a
+    second, unbounded revision cycle."""
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="v1"),
+            make_session(final_message="v2, partially addressed"),
+        ],
+        reviewer_responses=[
+            make_session(final_message="Needs tweaks.\n\nVERDICT: REQUEST_CHANGES"),
+            make_session(final_message="Still missing X.\n\nVERDICT: REQUEST_CHANGES"),
+        ],
+        gate_results=[_gate(True), _gate(True)],  # green initially, green after revision
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"  # green final gate still opens; human reviews it
+    assert run.review_verdict == "REQUEST_CHANGES"
+    assert len(fakes["builder"].calls) == 2  # bounded to exactly one revision, never a second
+    assert len(fakes["reviewer"].calls) == 2  # initial + exactly one final review
+    assert len(fakes["open_pr_fn"].calls) == 1
+    body = fakes["open_pr_fn"].calls[0]["body"]
+    assert "REQUEST_CHANGES" in body
+    assert "after one revision" in body
+    assert "human review" in body.lower()
 
 
 def test_review_requests_changes_then_revision_red_gate_no_pr(monkeypatch):

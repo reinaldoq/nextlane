@@ -1,5 +1,5 @@
 """The shared agent-task loop: worktree -> build -> gate -> cross-vendor
-review -> (bounded revision) -> PR -> journal.
+review -> (bounded revision -> final review) -> PR -> journal.
 
 Spec ref: Phase-2 Task 6. This assembles every primitive built in Tasks 1-5
 (adapters, worktree, gate, prompts, journal, github) into ONE function,
@@ -45,6 +45,16 @@ Robustness invariants:
 - A whole-run wall-clock budget (`total_timeout_s`) bounds the entire run: a
   shrinking per-session/-gate timeout is derived from the remaining budget,
   and exhaustion journals outcome="timeout" and exits.
+- **The review verdict recorded and published is always the FINAL one.** A
+  REQUEST_CHANGES verdict triggers exactly one revision cycle; once that
+  revision's gate is green, the reviewer runs ONE more time (read-only, same
+  engine) against the REVISED diff, and `review_verdict` is overwritten with
+  THAT verdict before the journal row is written or the PR body composed.
+  The cycle is bounded -- at most initial review + one revision + one final
+  review, never unbounded -- and a PR still opens on a green final gate even
+  if the final verdict is still REQUEST_CHANGES (the human merging the PR is
+  the actual gate); the PR body says so explicitly in that case rather than
+  masquerading the honest verdict as an approval.
 
 Recursion guard: the composed builder prompt tells the agent to run
 `just gate` itself (see `rails.prompts.compose`) -- and `just gate`'s pytest
@@ -484,7 +494,9 @@ def run_agent_task(
         review_verdict = parse_verdict(review_session.final_message)
         _phase(f"review verdict from {reviewer_engine}: [bold]{review_verdict}[/bold]")
 
+        revised = False
         if review_verdict != "APPROVE":
+            revised = True
             revision_prompt = _compose_revision(original_prompt, review_session.final_message)
             sessions.append(_run_session(builder, revision_prompt, label="revision", gate_ok=True))
             gate_result = _gate(True)
@@ -496,8 +508,26 @@ def run_agent_task(
                 _record(gate_ok=False, pr_url=None, outcome="gate_failed")
                 err_console.print(gate_result.summary())
                 raise typer.Exit(1)
-            # The post-revision review is NOT repeated -- advisory-only,
-            # bounded to exactly one cycle (see module docstring).
+            # Honesty fix (audit bug 1): the revision is re-reviewed EXACTLY
+            # ONCE more (read-only, same reviewer engine) against the REVISED
+            # diff. This keeps the cycle bounded -- at most initial review +
+            # one revision + one final review, never an unbounded loop -- while
+            # making sure `review_verdict` (and everything derived from it:
+            # the journal row, the PR body) reflects what the reviewer
+            # actually thinks of the FIXED code, not the stale, pre-revision
+            # REQUEST_CHANGES. The final verdict is recorded as-is even if
+            # it's still REQUEST_CHANGES -- see the PR body composition below,
+            # which then says so explicitly instead of masquerading.
+            final_diff = _diff(wt.path)
+            final_review_session = _run_session(
+                reviewer,
+                compose_review(final_diff, checklist=CHECKLIST),
+                label="final review",
+                gate_ok=True,
+            )
+            sessions.append(final_review_session)
+            review_verdict = parse_verdict(final_review_session.final_message)
+            _phase(f"final review verdict from {reviewer_engine}: [bold]{review_verdict}[/bold]")
 
         if not open_pr:
             run = _record(gate_ok=True, pr_url=None, outcome="completed_no_pr")
@@ -509,10 +539,26 @@ def run_agent_task(
             return run
 
         summary_text = sessions[0].final_message or title
+        if not revised:
+            journal_note = f"Cross-vendor review by {reviewer_engine} (rails): {review_verdict}"
+        elif review_verdict == "APPROVE":
+            journal_note = (
+                f"Final cross-vendor review by {reviewer_engine} (rails): APPROVE "
+                "(after one revision)."
+            )
+        else:
+            # Honesty fix (audit bug 1): a still-REQUEST_CHANGES final verdict
+            # must be stated plainly, not masqueraded -- the PR still opens
+            # (a green final gate + a human merge gate are the actual
+            # invariants), but the body flags it for human attention.
+            journal_note = (
+                f"Final cross-vendor review by {reviewer_engine} (rails): REQUEST_CHANGES "
+                "(after one revision) -- human review advised."
+            )
         body = github.pr_body(
             summary_text,
             engine_label=f"{engine} (rails)",
-            journal_note=f"Cross-vendor review by {reviewer_engine} (rails): {review_verdict}",
+            journal_note=journal_note,
         )
         _phase("▶ opening PR …")
         try:
