@@ -13,7 +13,7 @@ rails = "rails.cli:app"
 
 [dependency-groups]
 dev = [
-  "uvicorn>=0.30",
+  "uvicorn>=0.50.0",
   "httpx>=0.27",
   "pytest>=8",
   "ruff>=0.6",
