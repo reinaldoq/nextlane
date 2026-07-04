@@ -41,6 +41,49 @@ _GIT_ENV_WHITELIST = (
 )
 
 
+def _load_dotenv_if_present(repo_root: Path) -> None:
+    """Load `<repo_root>/.env` into `os.environ` for local `rails` CLI runs
+    -- audit bug 2: `uv run rails ...` (unlike the `just` recipes, which get
+    `set dotenv-load := true` for free) never loaded `.env` on its own, so a
+    bare `uv run rails triage` failed with a missing SUPABASE_URL/
+    SERVICE_ROLE_KEY outside of a `just` recipe.
+
+    A KEY already present in `os.environ` is NEVER overridden -- the real
+    environment (CI, an explicit shell export, `FOO=bar uv run rails ...`)
+    always wins over the `.env` file's value for that same key. CI sets real
+    env vars directly and has no `.env` file to begin with, so this is a
+    local-dev-only convenience with no effect on CI.
+
+    Tiny stdlib `KEY=VALUE` parser -- deliberately NOT a python-dotenv
+    dependency. Blank lines and `#`-comments are skipped; a leading `export
+    ` is stripped (so a `.env` copy-pasted from a shell profile still works);
+    a single matching layer of surrounding single/double quotes is stripped
+    from the value. A line with no `=` (or a missing/empty file) is silently
+    skipped/tolerated rather than raising -- a hand-edited `.env`'s stray
+    line must never crash the whole CLI.
+    """
+    env_path = repo_root / ".env"
+    try:
+        raw = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _repo_root() -> Path:
     try:
         result = subprocess.run(
@@ -74,7 +117,14 @@ class RailsConfig:
     def load(cls) -> RailsConfig:
         """Read configuration from the environment (with defaults) and the
         current repo's git metadata. Not memoized: every call re-reads the
-        environment and re-runs git rev-parse."""
+        environment and re-runs git rev-parse.
+
+        Auto-loads `<repo_root>/.env` first (see `_load_dotenv_if_present`)
+        so a bare `uv run rails ...` behaves like the `just` recipes
+        (`set dotenv-load := true`) without requiring `just` -- a real,
+        already-set env var always wins over the `.env` file's value."""
+        repo_root = _repo_root()
+        _load_dotenv_if_present(repo_root)
         raw_budget = os.environ.get("RAILS_MAX_BUDGET_USD", "2.0")
         try:
             max_budget_usd = float(raw_budget)
@@ -85,7 +135,7 @@ class RailsConfig:
         return cls(
             engine=os.environ.get("RAILS_ENGINE", "claude"),
             max_budget_usd=max_budget_usd,
-            repo_root=_repo_root(),
+            repo_root=repo_root,
         )
 
     def allowed_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:

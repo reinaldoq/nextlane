@@ -473,6 +473,84 @@ def test_config_is_frozen():
         cfg.engine = "gemini"
 
 
+# --- RailsConfig.load(): .env auto-load (audit bug 2) -----------------------
+#
+# `uv run rails ...` (bypassing the `just` recipes, which dotenv-load via
+# `set dotenv-load := true`) previously left os.environ exactly as the shell
+# gave it, so a bare `uv run rails triage` failed with a missing
+# SUPABASE_URL/SERVICE_ROLE_KEY. RailsConfig.load() must auto-load the repo
+# root's `.env` (tiny stdlib parser, no python-dotenv dependency) WITHOUT
+# overriding a variable the real environment already set -- CI sets real env
+# and typically has no `.env` file at all, so this is a pure local-dev
+# convenience with no CI behavior change.
+
+
+def test_load_dotenv_if_present_sets_unset_vars_only(monkeypatch, tmp_path):
+    from rails.config import _load_dotenv_if_present
+
+    (tmp_path / ".env").write_text(
+        "NEW_VAR=hello\n"
+        "EXISTING_VAR=should-not-be-used\n"
+        "# a comment line, skipped\n"
+        "\n"
+        "QUOTED_VAR='single quoted'\n"
+        'DQUOTED_VAR="double quoted"\n'
+        "MALFORMED LINE WITHOUT EQUALS -- skipped, never raises\n"
+        "export EXPORTED_VAR=exported-value\n"
+    )
+    monkeypatch.delenv("NEW_VAR", raising=False)
+    monkeypatch.setenv("EXISTING_VAR", "real-value")
+    monkeypatch.delenv("QUOTED_VAR", raising=False)
+    monkeypatch.delenv("DQUOTED_VAR", raising=False)
+    monkeypatch.delenv("EXPORTED_VAR", raising=False)
+
+    try:
+        _load_dotenv_if_present(tmp_path)
+
+        assert os.environ["NEW_VAR"] == "hello"
+        # a var the real environment already set is NEVER overridden
+        assert os.environ["EXISTING_VAR"] == "real-value"
+        assert os.environ["QUOTED_VAR"] == "single quoted"
+        assert os.environ["DQUOTED_VAR"] == "double quoted"
+        assert os.environ["EXPORTED_VAR"] == "exported-value"
+    finally:
+        for key in ("NEW_VAR", "QUOTED_VAR", "DQUOTED_VAR", "EXPORTED_VAR"):
+            os.environ.pop(key, None)
+
+
+def test_load_dotenv_if_present_missing_file_is_a_noop(tmp_path):
+    from rails.config import _load_dotenv_if_present
+
+    # tmp_path has no .env at all -- must not raise.
+    _load_dotenv_if_present(tmp_path)
+
+
+def test_config_load_auto_loads_dotenv_without_overriding_real_env(monkeypatch, tmp_path):
+    """End-to-end through RailsConfig.load() itself (not just the parser
+    helper): a fresh `.env` key becomes available, but a pre-existing
+    os.environ value for the same key always wins."""
+    (tmp_path / ".env").write_text(
+        "RAILS_DOTENV_TEST_NEW=from-dotenv\nRAILS_DOTENV_TEST_EXISTING=should-not-win\n"
+    )
+    monkeypatch.delenv("RAILS_DOTENV_TEST_NEW", raising=False)
+    monkeypatch.setenv("RAILS_DOTENV_TEST_EXISTING", "real-env-wins")
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=f"{tmp_path}\n", stderr="")
+
+    import rails.config
+
+    monkeypatch.setattr(rails.config.subprocess, "run", fake_run)
+
+    try:
+        RailsConfig.load()
+
+        assert os.environ["RAILS_DOTENV_TEST_NEW"] == "from-dotenv"
+        assert os.environ["RAILS_DOTENV_TEST_EXISTING"] == "real-env-wins"
+    finally:
+        os.environ.pop("RAILS_DOTENV_TEST_NEW", None)
+
+
 # --- RailsConfig.allowed_env() ----------------------------------------------
 
 
