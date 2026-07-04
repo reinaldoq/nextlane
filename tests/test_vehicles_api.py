@@ -45,6 +45,7 @@ def test_401_without_token_on_every_route(db_client: TestClient):
     requests = [
         ("GET", "/api/vehicles", None),
         ("GET", "/api/vehicles/stats", None),
+        ("GET", "/api/vehicles/export.csv", None),
         ("POST", "/api/vehicles", vehicle_body()),
         ("GET", f"/api/vehicles/{vid}", None),
         ("PATCH", f"/api/vehicles/{vid}", {"price_cents": 1}),
@@ -99,6 +100,40 @@ def test_stats_not_shadowed_by_id_route(db_client: TestClient, auth_headers: dic
     # /vehicles/stats must resolve to the stats endpoint, not be parsed as a
     # {vehicle_id} uuid (which would 422). Route order is load-bearing.
     r = db_client.get("/api/vehicles/stats", headers=auth_headers)
+    assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/vehicles/export.csv
+# ---------------------------------------------------------------------------
+
+
+def test_export_csv_header_and_content_type(db_client: TestClient, auth_headers: dict):
+    r = db_client.get("/api/vehicles/export.csv", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "attachment" in r.headers["content-disposition"]
+    assert ".csv" in r.headers["content-disposition"]
+    header = r.text.splitlines()[0]
+    assert header == "vin,make,model,year,price_eur,mileage_km,status"
+
+
+def test_export_csv_contains_created_vehicle_row(db_client: TestClient, auth_headers: dict):
+    v = create_vehicle(db_client, auth_headers, price_cents=1_500_000)
+
+    r = db_client.get("/api/vehicles/export.csv", headers=auth_headers)
+    assert r.status_code == 200
+    lines = r.text.splitlines()
+    assert lines[0] == "vin,make,model,year,price_eur,mileage_km,status"
+    row = next(line for line in lines[1:] if line.startswith(v["vin"]))
+    # price_eur is price_cents/100 with 2 decimals, all columns in order.
+    assert row == f"{v['vin']},Honda,Accord,2020,15000.00,12000,available"
+
+
+def test_export_csv_not_shadowed_by_id_route(db_client: TestClient, auth_headers: dict):
+    # /vehicles/export.csv must resolve to the export endpoint, not be parsed as
+    # a {vehicle_id} uuid (which would 422). Route order is load-bearing.
+    r = db_client.get("/api/vehicles/export.csv", headers=auth_headers)
     assert r.status_code == 200
 
 
