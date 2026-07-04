@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Alert, Card, Col, Flex, Row, Statistic, Typography, theme } from 'antd'
-import { ApiError, api, isAbortError, type ListResponse, type Vehicle } from '../lib/api'
+import { ApiError, api, isAbortError, type Vehicle, type VehicleStats } from '../lib/api'
 
 const { Text } = Typography
 
@@ -17,21 +17,15 @@ const STAT_DEFS: StatDef[] = [
   { status: 'sold', label: 'Sold' },
 ]
 
-const STATUSES: Status[] = STAT_DEFS.map((def) => def.status)
-
 interface StatCardsProps {
-  /** Bump to re-run the three count requests (kept in step with the table's own reloads). */
+  /** Bump to re-run the stats request (kept in step with the table's own reloads). */
   refreshKey: number
 }
 
-/** Three status counts, each a `total` read from a `limit: 1` list request. */
+/** Three status counts, read from a single GET /api/vehicles/stats request. */
 function StatCards({ refreshKey }: StatCardsProps) {
   const { token } = theme.useToken()
-  const [counts, setCounts] = useState<Record<Status, number | null>>({
-    available: null,
-    reserved: null,
-    sold: null,
-  })
+  const [stats, setStats] = useState<VehicleStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -42,34 +36,19 @@ function StatCards({ refreshKey }: StatCardsProps) {
     setLoading(true)
     setError(null)
 
-    // TODO: consolidate these 3 count requests (+ the table's own list request:
-    // 4 requests per refresh) into a single future GET /api/vehicles/stats.
-    void Promise.allSettled(
-      STATUSES.map((status) =>
-        api.get<ListResponse<Vehicle>>('/api/vehicles', { status, limit: 1 }, controller.signal),
-      ),
-    ).then((results) => {
-      if (!active) return
-
-      const nextCounts: Partial<Record<Status, number>> = {}
-      let failure: unknown = null
-      results.forEach((result, index) => {
-        const status = STATUSES[index]
-        if (status === undefined) return
-        if (result.status === 'fulfilled') {
-          nextCounts[status] = result.value.total
-        } else if (!isAbortError(result.reason)) {
-          failure = result.reason
-        }
+    // One request for every card: the counts come pre-aggregated by the API.
+    void api
+      .get<VehicleStats>('/api/vehicles/stats', undefined, controller.signal)
+      .then((result) => {
+        if (!active) return
+        setStats(result)
+        setLoading(false)
       })
-
-      // Render whichever counts succeeded; a single shared line covers failures.
-      setCounts((prev) => ({ ...prev, ...nextCounts }))
-      if (failure !== null) {
-        setError(failure instanceof ApiError ? failure.message : 'Failed to load stats.')
-      }
-      setLoading(false)
-    })
+      .catch((reason: unknown) => {
+        if (!active || isAbortError(reason)) return
+        setError(reason instanceof ApiError ? reason.message : 'Failed to load stats.')
+        setLoading(false)
+      })
 
     return () => {
       active = false
@@ -113,8 +92,8 @@ function StatCards({ refreshKey }: StatCardsProps) {
                     {label}
                   </span>
                 }
-                value={counts[status] ?? undefined}
-                loading={loading && counts[status] === null}
+                value={stats?.[status] ?? undefined}
+                loading={loading && stats === null}
                 valueStyle={{
                   color: accentColor[status],
                   fontVariantNumeric: 'tabular-nums',
