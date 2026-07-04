@@ -220,6 +220,18 @@ def test_triage_defaults_engine_reviewer_none_open_pr_true(fakes):
     assert call["open_pr"] is True
 
 
+def test_triage_enforces_reproduce_then_fix(fakes):
+    """Triage is the ONE caller that opts into the enforced red->green
+    reproduction gate (TDFlow, EACL 2026) -- build-feature/migrate/review
+    never set this, since it only makes sense for a reported bug that has a
+    reproducible, pre-fix failing state."""
+    cfg = make_config()
+
+    triage(cfg, fetch_fn=fakes["fetch_fn"], mark_fn=fakes["mark_fn"], run_fn=fakes["run_fn"])
+
+    assert fakes["run_calls"][0]["enforce_repro"] is True
+
+
 # --- marking the event on success only ----------------------------------------
 
 

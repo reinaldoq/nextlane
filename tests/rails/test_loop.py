@@ -146,6 +146,39 @@ def _gate(ok: bool, *, tail: str | None = None) -> GateResult:
     )
 
 
+def _gate_multi(*, pytest_ok: bool, other_ok: bool = True) -> GateResult:
+    """A GateResult with SEVERAL named steps, pytest's own `ok` independent
+    of the others -- proves the enforce_repro phase-1 RED check inspects the
+    `pytest` StepResult specifically rather than the gate's overall `ok`
+    (which, for a real gate, would happen to agree here anyway since `ok =
+    all(step.ok ...)`, but a fake that only ever models a single step named
+    "pytest" -- see `_gate` above -- can't distinguish the two code paths)."""
+    steps = (
+        StepResult(
+            name="ruff-check",
+            ok=other_ok,
+            exit_code=0 if other_ok else 1,
+            duration_s=0.1,
+            output_tail="" if other_ok else "ruff violation",
+        ),
+        StepResult(
+            name="pytest",
+            ok=pytest_ok,
+            exit_code=0 if pytest_ok else 1,
+            duration_s=0.1,
+            output_tail="" if pytest_ok else "AssertionError: reproduced the bug",
+        ),
+        StepResult(
+            name="web-build",
+            ok=other_ok,
+            exit_code=0 if other_ok else 1,
+            duration_s=0.1,
+            output_tail="" if other_ok else "build broke",
+        ),
+    )
+    return GateResult(ok=all(step.ok for step in steps), steps=steps)
+
+
 @dataclass
 class FakeOpenPr:
     calls: list[dict] = field(default_factory=list)
@@ -237,6 +270,7 @@ def make_runner_kwargs(
     diff_text="diff --git a/foo b/foo\n+bar\n",
     count=1,
     dirty=False,
+    touches_tests=True,
     monkeypatch,
 ):
     builder = FakeAdapter(name="claude", responses=builder_responses)
@@ -254,6 +288,9 @@ def make_runner_kwargs(
     monkeypatch.setattr("rails.agents.loop._count_commits", lambda wt_path, base="main": count)
     monkeypatch.setattr("rails.agents.loop._has_uncommitted_changes", lambda wt_path: dirty)
     monkeypatch.setattr("rails.agents.loop._auto_commit", auto_commit_fn)
+    monkeypatch.setattr(
+        "rails.agents.loop._touches_tests", lambda wt_path, base="main": touches_tests
+    )
     monkeypatch.setattr("rails.agents.loop.cleanup", cleanup_fn)
     monkeypatch.setattr("rails.agents.loop.err_console", console)
 
@@ -1729,3 +1766,379 @@ def test_retry_prompt_uses_latest_gate_summary_only_not_stale_ones(monkeypatch):
     retry2_prompt = fakes["builder"].calls[2]["prompt"]
     assert "FAIL_TWO" in retry2_prompt
     assert "FAIL_ONE" not in retry2_prompt
+
+
+# === enforced reproduce-then-fix (enforce_repro) ============================
+#
+# TDFlow (EACL 2026): a mandatory failing-reproduction-test gate before any
+# fix is attempted. `enforce_repro=True` inserts PHASE 1 (write a test that
+# the gate's own `pytest` STEP confirms FAILS -- never a trusted claim from
+# the session transcript) before the normal build flow, which then becomes
+# PHASE 2 (fix until the FULL gate is green, reusing the exact same bounded
+# retry loop the build-feature tests above already exercise). `triage` is
+# the only caller that sets `enforce_repro=True` today (see test_triage.py);
+# every test ABOVE this comment omits `enforce_repro` (defaulting False) and
+# is therefore this feature's own regression guard that the existing
+# one-phase build-feature flow is completely unchanged.
+
+
+def test_pytest_step_finds_named_step():
+    from rails.agents.loop import _pytest_step
+
+    gate = _gate_multi(pytest_ok=False)
+    step = _pytest_step(gate)
+
+    assert step is not None
+    assert step.name == "pytest"
+    assert step.ok is False
+
+
+def test_pytest_step_returns_none_when_absent():
+    from rails.agents.loop import _pytest_step
+
+    gate = GateResult(
+        ok=True,
+        steps=(
+            StepResult(name="ruff-check", ok=True, exit_code=0, duration_s=0.1, output_tail=""),
+        ),
+    )
+
+    assert _pytest_step(gate) is None
+
+
+def test_enforce_repro_happy_path_pr_opened_with_repro_confirmed(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="Wrote a failing test."),
+            make_session(final_message="Fixed it."),
+        ],
+        reviewer_responses=[make_session(final_message="LGTM.\n\nVERDICT: APPROVE")],
+        gate_results=[
+            _gate_multi(pytest_ok=False),  # phase 1: RED (bug reproduced)
+            _gate(True),  # phase 2: GREEN (fix verified)
+        ],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg,
+        task_kind="triage",
+        task_body="bug report",
+        title="fix: bug",
+        enforce_repro=True,
+        retro=False,
+        **kwargs,
+    )
+
+    assert run.outcome == "pr_opened"
+    assert run.repro_confirmed is True
+    assert run.repro_evidence is not None
+    assert "RED" in run.repro_evidence
+    assert "GREEN" in run.repro_evidence
+    assert run.retries == 0
+    assert len(fakes["builder"].calls) == 2  # phase 1 (reproduce) + phase 2 (fix), no retries
+    assert len(fakes["reviewer"].calls) == 1
+    assert len(fakes["open_pr_fn"].calls) == 1
+    body = fakes["open_pr_fn"].calls[0]["body"]
+    assert "Enforced reproduce-then-fix" in body
+
+
+def test_enforce_repro_phase1_prompt_is_compose_repro_phase2_is_compose_fix(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(), make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate_multi(pytest_ok=False), _gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(
+        cfg,
+        task_kind="triage",
+        task_body="DISTINCTIVE_BUG_REPORT",
+        title="fix: bug",
+        enforce_repro=True,
+        retro=False,
+        **kwargs,
+    )
+
+    phase1_prompt = fakes["builder"].calls[0]["prompt"]
+    phase2_prompt = fakes["builder"].calls[1]["prompt"]
+    assert "PHASE 1" in phase1_prompt
+    assert "failing automated test" in phase1_prompt.lower()
+    assert "PHASE 2" in phase2_prompt
+    assert "DISTINCTIVE_BUG_REPORT" in phase1_prompt
+    assert "DISTINCTIVE_BUG_REPORT" in phase2_prompt
+
+
+def test_enforce_repro_phase_banners_emitted(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(), make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate_multi(pytest_ok=False), _gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(
+        cfg,
+        task_kind="triage",
+        task_body="x",
+        title="fix: x",
+        enforce_repro=True,
+        retro=False,
+        **kwargs,
+    )
+
+    text = fakes["console"].text
+    assert "phase 1: reproduce" in text
+    assert "bug reproduced" in text
+    assert "pytest red" in text
+    assert "phase 2: fix" in text
+
+
+def test_enforce_repro_cannot_reproduce_when_pytest_passes_after_bounded_retry(monkeypatch):
+    """Phase 1's test never actually fails against current code, even after
+    the one allowed retry -- the harness concludes the bug can't be
+    reproduced (e.g. it describes a non-existent feature) and stops BEFORE
+    any fix, review, or PR: exactly the guard this feature exists for."""
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="Wrote a test (that passes)."),
+            make_session(final_message="Wrote another test (still passes)."),
+        ],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[
+            _gate_multi(pytest_ok=True),  # attempt 1: test PASSED -- not reproduced
+            _gate_multi(pytest_ok=True),  # attempt 2 (the one bounded retry): still passes
+        ],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit) as excinfo:
+        run_agent_task(
+            cfg,
+            task_kind="triage",
+            task_body="not actually a bug",
+            title="fix: photo upload",
+            enforce_repro=True,
+            **kwargs,
+        )
+
+    assert excinfo.value.exit_code == 1
+    assert len(fakes["builder"].calls) == 2  # initial phase-1 attempt + exactly one retry
+    assert len(fakes["reviewer"].calls) == 0  # never reaches review
+    assert len(fakes["open_pr_fn"].calls) == 0  # never reaches PR
+    assert len(fakes["recorder"].records) == 1
+    record = fakes["recorder"].records[0]
+    assert record.outcome == "cannot_reproduce"
+    assert record.repro_confirmed is False
+    assert record.pr_url is None
+    assert "reproduction test passed without any fix" in fakes["console"].text
+    assert "could not reproduce the reported bug" in fakes["console"].text
+
+
+def test_enforce_repro_no_test_diff_is_cannot_reproduce(monkeypatch):
+    """Even a RED gate isn't sufficient proof: if phase 1's diff never
+    actually touches a test file (tests/ or web/e2e/), the harness must not
+    trust an incidentally-failing gate (e.g. a lint break) as a
+    reproduction."""
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(), make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[
+            _gate_multi(pytest_ok=False),  # gate IS red...
+            _gate_multi(pytest_ok=False),
+        ],
+        touches_tests=False,  # ...but no test file was ever added/changed
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit):
+        run_agent_task(
+            cfg,
+            task_kind="triage",
+            task_body="x",
+            title="fix: x",
+            enforce_repro=True,
+            **kwargs,
+        )
+
+    assert len(fakes["reviewer"].calls) == 0
+    assert len(fakes["open_pr_fn"].calls) == 0
+    record = fakes["recorder"].records[-1]
+    assert record.outcome == "cannot_reproduce"
+    assert record.repro_confirmed is False
+
+
+def test_enforce_repro_bounded_retry_then_succeeds(monkeypatch):
+    """Attempt 1 doesn't reproduce (pytest passed); the bounded retry DOES
+    (pytest failed + a real test-file diff) -- phase 2 then proceeds
+    normally. Proves the retry is a real second chance, capped at exactly
+    one."""
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="v1 (passes, doesn't reproduce)"),
+            make_session(final_message="v2 (fails, reproduces)"),
+            make_session(final_message="fixed it"),
+        ],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[
+            _gate_multi(pytest_ok=True),  # attempt 1: not reproduced
+            _gate_multi(pytest_ok=False),  # attempt 2 (retry): reproduced
+            _gate(True),  # phase 2: green
+        ],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg,
+        task_kind="triage",
+        task_body="x",
+        title="fix: x",
+        enforce_repro=True,
+        retro=False,
+        **kwargs,
+    )
+
+    assert run.outcome == "pr_opened"
+    assert run.repro_confirmed is True
+    assert len(fakes["builder"].calls) == 3  # 2 phase-1 attempts + phase 2
+    retry_prompt = fakes["builder"].calls[1]["prompt"]
+    assert "doesn't reproduce the bug" in retry_prompt.lower()
+
+
+def test_enforce_repro_gate_failed_after_phase2_exhausts_retries_repro_not_confirmed(monkeypatch):
+    """The bug WAS reproduced (phase 1 red), but the fix session never gets
+    the full gate green even after retries -- the proof is incomplete, so
+    repro_confirmed must stay False even though half the protocol
+    succeeded, and the outcome is the ordinary gate_failed (never a
+    fabricated PR)."""
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="reproduced it"),
+            make_session(final_message="fix attempt 1"),
+        ],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[
+            _gate_multi(pytest_ok=False),  # phase 1: reproduced
+            _gate(False),  # phase 2: still red
+        ],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit) as excinfo:
+        run_agent_task(
+            cfg,
+            task_kind="triage",
+            task_body="x",
+            title="fix: x",
+            enforce_repro=True,
+            max_retries=0,
+            **kwargs,
+        )
+
+    assert excinfo.value.exit_code == 1
+    record = fakes["recorder"].records[-1]
+    assert record.outcome == "gate_failed"
+    assert record.repro_confirmed is False
+    assert len(fakes["open_pr_fn"].calls) == 0
+
+
+def test_enforce_repro_false_default_flow_unaffected_by_new_fields(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(final_message="Implemented the thing.")],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", retro=False, **kwargs
+    )
+
+    assert run.outcome == "pr_opened"
+    assert run.repro_confirmed is False
+    assert run.repro_evidence is None
+    assert len(fakes["builder"].calls) == 1  # unchanged: exactly one build session
+
+
+def test_enforce_repro_cost_summed_across_both_phases_and_review(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(cost_usd=0.10),
+            make_session(cost_usd=0.20),
+        ],
+        reviewer_responses=[make_session(cost_usd=0.05, final_message="VERDICT: APPROVE")],
+        gate_results=[_gate_multi(pytest_ok=False), _gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg,
+        task_kind="triage",
+        task_body="x",
+        title="fix: x",
+        enforce_repro=True,
+        retro=False,
+        **kwargs,
+    )
+
+    assert run.cost_usd == pytest.approx(0.35)
+
+
+def test_enforce_repro_phase1_auto_commits_uncommitted_test(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[
+            make_session(final_message="wrote test, forgot to commit"),
+            make_session(),
+        ],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate_multi(pytest_ok=False), _gate(True)],
+        dirty=True,
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(
+        cfg,
+        task_kind="triage",
+        task_body="x",
+        title="fix: x",
+        enforce_repro=True,
+        retro=False,
+        **kwargs,
+    )
+
+    assert len(fakes["auto_commit_fn"].calls) >= 1
+    assert "phase 1" in fakes["auto_commit_fn"].calls[0]["message"].lower()
+
+
+def test_enforce_repro_mission_control_finish_reflects_cannot_reproduce(monkeypatch):
+    mc = FakeMissionControl()
+    monkeypatch.setattr("rails.mission_control.start_run", mc.start_run)
+    monkeypatch.setattr("rails.mission_control.add_step", mc.add_step)
+    monkeypatch.setattr("rails.mission_control.finish_run", mc.finish_run)
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(), make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate_multi(pytest_ok=True), _gate_multi(pytest_ok=True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit):
+        run_agent_task(
+            cfg, task_kind="triage", task_body="x", title="fix: x", enforce_repro=True, **kwargs
+        )
+
+    assert len(mc.finish_calls) == 1
+    assert mc.finish_calls[0]["status"] == "cannot_reproduce"
+    assert mc.finish_calls[0]["pr_url"] is None

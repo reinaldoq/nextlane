@@ -60,6 +60,7 @@ def test_new_accepts_all_documented_outcomes():
         "completed_no_pr",
         "no_changes",
         "timeout",
+        "cannot_reproduce",
     ):
         run = RunRecord.new(**_make_kwargs(outcome=outcome))
         assert run.outcome == outcome
@@ -73,7 +74,7 @@ def test_run_record_is_frozen():
 
 def test_new_stamps_schema_version():
     run = RunRecord.new(**_make_kwargs())
-    assert run.schema_version == 3
+    assert run.schema_version == 4
 
 
 def test_new_defaults_transcript_paths_and_review_verdict():
@@ -85,6 +86,32 @@ def test_new_defaults_transcript_paths_and_review_verdict():
 def test_new_defaults_proposed_learnings_empty():
     run = RunRecord.new(**_make_kwargs())
     assert run.proposed_learnings == []
+
+
+# --- enforced reproduce-then-fix proof fields (Task: triage red->green gate) --
+
+
+def test_new_defaults_repro_fields_false_and_none():
+    run = RunRecord.new(**_make_kwargs())
+    assert run.repro_confirmed is False
+    assert run.repro_evidence is None
+
+
+def test_new_accepts_repro_fields():
+    run = RunRecord.new(
+        **_make_kwargs(
+            repro_confirmed=True,
+            repro_evidence="pytest RED at phase 1 (1 attempt), GREEN after fix (0 retries)",
+        )
+    )
+    assert run.repro_confirmed is True
+    assert run.repro_evidence == "pytest RED at phase 1 (1 attempt), GREEN after fix (0 retries)"
+
+
+def test_new_accepts_cannot_reproduce_outcome_with_repro_confirmed_false():
+    run = RunRecord.new(**_make_kwargs(outcome="cannot_reproduce", gate_ok=False, pr_url=None))
+    assert run.outcome == "cannot_reproduce"
+    assert run.repro_confirmed is False
 
 
 def test_new_accepts_proposed_learnings():
@@ -120,7 +147,7 @@ def test_from_row_fills_missing_schema_version_with_default():
 
     restored = RunRecord.from_row(row)
 
-    assert restored.schema_version == 3
+    assert restored.schema_version == 4
     assert restored == run  # the default makes it round-trip-equal
 
 
@@ -164,6 +191,30 @@ def test_from_row_fills_missing_proposed_learnings_via_default_factory():
     assert restored == run
 
 
+def test_from_row_fills_missing_repro_confirmed_with_default_false():
+    """An old (pre-Task) line lacks `repro_confirmed` entirely -- from_row
+    must fill the field's own default (False), not None."""
+    run = RunRecord.new(**_make_kwargs())
+    row = dataclasses.asdict(run)
+    del row["repro_confirmed"]
+
+    restored = RunRecord.from_row(row)
+
+    assert restored.repro_confirmed is False
+    assert restored == run
+
+
+def test_from_row_fills_missing_repro_evidence_with_none():
+    run = RunRecord.new(**_make_kwargs())
+    row = dataclasses.asdict(run)
+    del row["repro_evidence"]
+
+    restored = RunRecord.from_row(row)
+
+    assert restored.repro_evidence is None
+    assert restored == run
+
+
 def test_from_row_fills_missing_optional_field_with_none():
     run = RunRecord.new(**_make_kwargs())
     row = dataclasses.asdict(run)
@@ -202,7 +253,7 @@ def test_load_tolerates_old_and_future_schema_lines(tmp_path):
 
     assert len(loaded) == 2
     assert loaded[0].task_summary == "old line"
-    assert loaded[0].schema_version == 3
+    assert loaded[0].schema_version == 4
     assert loaded[1].task_summary == "future line"
 
 

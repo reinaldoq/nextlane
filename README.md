@@ -85,7 +85,10 @@ uv run rails review --pr 42 --engine claude --comment
 ```
 
 `build-feature` implements a feature end-to-end from a plain-language spec;
-`triage` turns a reported `app_events` row into a reproduction test + fix;
+`triage` turns a reported `app_events` row into a reproduction test + fix —
+**enforced**: the harness's own gate must confirm the reproduction test
+genuinely fails before any fix is attempted, and genuinely passes after (see
+[`docs/design-rationale.md`](docs/design-rationale.md));
 `migrate` authors and applies a schema change; `review` runs a standalone
 cross-vendor review against an open PR (or `--range`), independent of the
 other three. `--engine` picks the builder (defaults to `RAILS_ENGINE`);

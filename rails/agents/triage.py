@@ -101,6 +101,13 @@ def triage(
         engine=engine,
         reviewer_engine=reviewer,
         open_pr=open_pr,
+        # Enforced reproduce-then-fix (TDFlow, EACL 2026): a reported bug is
+        # exactly the case where a pre-fix failing state genuinely exists,
+        # so `run_agent_task` is required to get the gate's own pytest step
+        # to fail (proving the bug) before any fix is attempted -- see
+        # `rails.agents.loop`'s module docstring. build-feature/migrate/
+        # review never set this.
+        enforce_repro=True,
     )
 
     if run.outcome == "pr_opened":
