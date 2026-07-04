@@ -695,6 +695,135 @@ def test_get_adapter_passes_binary_override_through():
     assert adapter.binary == ["uv", "run", "codex"]
 
 
+def test_get_adapter_defaults_readonly_false():
+    adapter = get_adapter("claude", make_config())
+    assert adapter.readonly is False
+
+
+def test_get_adapter_threads_readonly_through():
+    adapter = get_adapter("codex", make_config(), readonly=True)
+    assert adapter.readonly is True
+
+
+# --- readonly build_argv (I3): reviewer sessions must not be able to write ---
+
+
+def test_claude_readonly_build_argv_uses_plan_not_acceptedits():
+    adapter = ClaudeAdapter(make_config(), binary=["claude"], readonly=True)
+
+    argv = adapter.build_argv("review this", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert "plan" in argv
+    assert "acceptEdits" not in argv
+    # the read-only mode is the value of --permission-mode
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+
+
+def test_claude_write_build_argv_uses_acceptedits_not_plan():
+    adapter = ClaudeAdapter(make_config(), binary=["claude"], readonly=False)
+
+    argv = adapter.build_argv("build this", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert "plan" not in argv
+
+
+def test_codex_readonly_build_argv_uses_read_only_sandbox():
+    adapter = CodexAdapter(make_config(), binary=["codex"], readonly=True)
+
+    argv = adapter.build_argv("review this", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv[argv.index("-s") + 1] == "read-only"
+    assert "workspace-write" not in argv
+
+
+def test_codex_write_build_argv_uses_workspace_write_sandbox():
+    adapter = CodexAdapter(make_config(), binary=["codex"], readonly=False)
+
+    argv = adapter.build_argv("build this", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv[argv.index("-s") + 1] == "workspace-write"
+    assert "read-only" not in argv
+
+
+def test_gemini_readonly_build_argv_uses_default_approval_mode():
+    adapter = GeminiAdapter(make_config(), binary=["gemini"], readonly=True)
+
+    argv = adapter.build_argv("review this", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv[argv.index("--approval-mode") + 1] == "default"
+    assert "auto_edit" not in argv
+
+
+def test_gemini_write_build_argv_uses_auto_edit_approval_mode():
+    adapter = GeminiAdapter(make_config(), binary=["gemini"], readonly=False)
+
+    argv = adapter.build_argv("build this", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert argv[argv.index("--approval-mode") + 1] == "auto_edit"
+    assert "default" not in argv
+
+
+# --- A1: KeyboardInterrupt during a live session kills the process group -----
+
+
+def test_keyboardinterrupt_during_session_kills_process_group(fake_binary, tmp_cwd, monkeypatch):
+    """Ctrl-C mid-session must NOT orphan a running engine child burning
+    subscription quota: the base run() catches KeyboardInterrupt during
+    proc.wait(), kills the whole process group, then re-raises."""
+    argv, extra_env = fake_binary(shape="claude", behavior="timeout")
+    adapter = ClaudeAdapter(make_config(), binary=argv)
+
+    real_wait = subprocess.Popen.wait
+    state = {"interrupted": False}
+
+    def fake_wait(self, timeout=None):
+        # On the FIRST timed wait (run()'s proc.wait(timeout=timeout_s)), let
+        # the child actually start + write its pid so we can verify the group
+        # got killed, then simulate the operator's Ctrl-C. The handler's own
+        # untimed proc.wait() reaps normally via the real implementation.
+        if not state["interrupted"] and timeout is not None:
+            for _ in range(100):
+                if (tmp_cwd / "fake_engine.pid").exists():
+                    break
+                time.sleep(0.05)
+            state["interrupted"] = True
+            raise KeyboardInterrupt
+        return real_wait(self, timeout=timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", fake_wait)
+
+    with pytest.raises(KeyboardInterrupt):
+        adapter.run("hello", cwd=tmp_cwd, timeout_s=30, extra_env=extra_env)
+
+    pid_file = tmp_cwd / "fake_engine.pid"
+    assert pid_file.exists(), "fake engine never started / never wrote its pid"
+    pid = int(pid_file.read_text())
+
+    # The process (and its group) must be dead, not merely orphaned.
+    for _ in range(40):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+def test_session_error_carries_transcript_path_on_timeout(fake_binary, tmp_cwd):
+    """C2 support: a SessionError from a timeout carries the partial
+    transcript path so the loop can tell the operator what to inspect."""
+    argv, extra_env = fake_binary(shape="claude", behavior="timeout")
+    adapter = ClaudeAdapter(make_config(), binary=argv)
+
+    with pytest.raises(SessionError) as excinfo:
+        adapter.run("hello", cwd=tmp_cwd, timeout_s=2, extra_env=extra_env)
+
+    assert excinfo.value.transcript_path is not None
+    assert excinfo.value.transcript_path.parent.name == ".rails-transcripts"
+
+
 # --- gated real-engine tests --------------------------------------------------
 
 

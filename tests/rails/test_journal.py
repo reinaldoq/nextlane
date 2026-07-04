@@ -52,7 +52,15 @@ def test_new_rejects_invalid_outcome():
 
 
 def test_new_accepts_all_documented_outcomes():
-    for outcome in ("pr_opened", "gate_failed", "review_rejected", "error", "completed_no_pr"):
+    for outcome in (
+        "pr_opened",
+        "gate_failed",
+        "review_rejected",
+        "error",
+        "completed_no_pr",
+        "no_changes",
+        "timeout",
+    ):
         run = RunRecord.new(**_make_kwargs(outcome=outcome))
         assert run.outcome == outcome
 

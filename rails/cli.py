@@ -47,7 +47,12 @@ def build_feature(
         help="Cross-vendor reviewer engine. Defaults to the other of claude/codex.",
     ),
     no_pr: bool = typer.Option(
-        False, "--no-pr", help="Run the full loop but stop short of opening a PR."
+        False,
+        "--no-pr",
+        help=(
+            "Run the full loop but stop short of opening a PR. Leaves the worktree and its "
+            "branch in place under .worktrees/ for inspection (they are NOT cleaned up)."
+        ),
     ),
 ) -> None:
     """Drive a headless agent session to implement a feature end-to-end."""

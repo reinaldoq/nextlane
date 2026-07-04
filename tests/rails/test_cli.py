@@ -118,6 +118,9 @@ def test_build_feature_help_shows_engine_reviewer_no_pr_flags():
     assert "--engine" in result.output
     assert "--reviewer" in result.output
     assert "--no-pr" in result.output
+    # M3: the --no-pr help documents that it leaves the worktree/branch for
+    # inspection (rich may wrap the help text, so match on a short token).
+    assert "inspection" in result.output
 
 
 def test_build_feature_calls_agent_with_spec_and_defaults(monkeypatch):

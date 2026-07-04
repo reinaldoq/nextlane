@@ -107,8 +107,13 @@ class ClaudeAdapter(_SubprocessAdapter):
             "--verbose",
             "--output-format",
             "stream-json",
+            # readonly reviewer sessions run in "plan" mode (claude's
+            # read-only permission mode: it can read/analyze but not edit);
+            # write sessions use "acceptEdits" so the agent can actually
+            # apply changes. See rails/agents/loop.py -- the cross-vendor
+            # reviewer must never mutate the worktree it's judging.
             "--permission-mode",
-            "acceptEdits",
+            "plan" if self.readonly else "acceptEdits",
             "--max-budget-usd",
             str(self.cfg.max_budget_usd),
         ]

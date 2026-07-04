@@ -17,9 +17,15 @@ _ADAPTERS = {
 }
 
 
-def get_adapter(engine: str, cfg: RailsConfig, binary: list[str] | None = None) -> AgentSession:
+def get_adapter(
+    engine: str,
+    cfg: RailsConfig,
+    binary: list[str] | None = None,
+    *,
+    readonly: bool = False,
+) -> AgentSession:
     try:
         adapter_cls = _ADAPTERS[engine]
     except KeyError as exc:
         raise ValueError(f"unknown engine: {engine!r}") from exc
-    return adapter_cls(cfg, binary=binary)
+    return adapter_cls(cfg, binary=binary, readonly=readonly)

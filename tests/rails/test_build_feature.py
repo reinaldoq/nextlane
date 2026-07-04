@@ -60,15 +60,17 @@ def test_build_feature_appends_module_pointer_to_spec(fake_run_agent_task):
 # --- title -----------------------------------------------------------------
 
 
-def test_build_feature_title_is_feat_prefixed_spec(fake_run_agent_task):
+def test_build_feature_title_is_rails_run_scoped_spec(fake_run_agent_task):
     cfg = make_config()
 
     build_feature(cfg, "Add a GET /api/vehicles/stats endpoint")
 
-    assert fake_run_agent_task[0]["title"] == "feat: Add a GET /api/vehicles/stats endpoint"
+    assert (
+        fake_run_agent_task[0]["title"] == "feat(rails-run): Add a GET /api/vehicles/stats endpoint"
+    )
 
 
-def test_build_feature_title_truncates_to_about_60_chars(fake_run_agent_task):
+def test_build_feature_title_truncates_to_about_55_chars(fake_run_agent_task):
     cfg = make_config()
     long_spec = (
         "Add a very long feature description that goes on and on past sixty characters for sure"
@@ -77,8 +79,8 @@ def test_build_feature_title_truncates_to_about_60_chars(fake_run_agent_task):
     build_feature(cfg, long_spec)
 
     title = fake_run_agent_task[0]["title"]
-    assert title.startswith("feat: ")
-    assert len(title) <= len("feat: ") + 60
+    assert title.startswith("feat(rails-run): ")
+    assert len(title) <= len("feat(rails-run): ") + 55
 
 
 def test_build_feature_title_collapses_newlines_and_whitespace(fake_run_agent_task):

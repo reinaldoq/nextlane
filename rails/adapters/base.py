@@ -85,7 +85,18 @@ class ParsedTranscript:
 
 class SessionError(RuntimeError):
     """Raised on timeout, spawn failure, or transcript-capture failure
-    (NOT on nonzero engine exit -- that's ok=False)."""
+    (NOT on nonzero engine exit -- that's ok=False).
+
+    `transcript_path` carries the partial transcript file for the failed
+    session WHERE ONE EXISTS (timeout / capture failure -- the file was
+    already opened before the failure); it stays None for a spawn failure,
+    which dies before any transcript file is created. Task 6's loop reads it
+    to tell the operator exactly which file to inspect after a mid-run
+    SessionError."""
+
+    def __init__(self, *args: object, transcript_path: Path | None = None) -> None:
+        super().__init__(*args)
+        self.transcript_path = transcript_path
 
 
 class AgentSession(Protocol):
@@ -133,9 +144,18 @@ class _SubprocessAdapter:
     # "ok and not explicit_result" checks never false-flag them.
     emits_terminal_result: bool = True
 
-    def __init__(self, cfg: RailsConfig, binary: list[str] | None = None) -> None:
+    def __init__(
+        self, cfg: RailsConfig, binary: list[str] | None = None, *, readonly: bool = False
+    ) -> None:
+        # readonly=True makes build_argv select the engine's READ-ONLY
+        # permission/approval mode instead of its write mode -- the loop's
+        # cross-vendor reviewer session runs read-only so a reviewer can
+        # never mutate the worktree it's judging (see rails/agents/loop.py).
+        # Threaded to build_argv via this instance attribute (build_argv
+        # stays a pure function of prompt + construction-time config).
         self.cfg = cfg
         self.binary = binary if binary is not None else self.default_binary()
+        self.readonly = readonly
 
     def default_binary(self) -> list[str]:  # pragma: no cover - overridden by subclasses
         raise NotImplementedError
@@ -228,8 +248,24 @@ class _SubprocessAdapter:
                 stdout_thread.join(timeout=5)
                 stderr_thread.join(timeout=5)
                 raise SessionError(
-                    f"{self.name} session exceeded timeout of {timeout_s}s (pid {proc.pid} killed)"
+                    f"{self.name} session exceeded timeout of {timeout_s}s (pid {proc.pid} killed)",
+                    transcript_path=transcript_path,
                 ) from None
+            except KeyboardInterrupt:
+                # Ctrl-C during a live session: kill the WHOLE process group
+                # (the engine CLI can spawn its own children) before
+                # unwinding, so an interactive interrupt never orphans a
+                # running claude/codex/gemini burning subscription quota in
+                # the background. The child was launched start_new_session=
+                # True, so its pgid == its pid (see _kill_process_group).
+                # Re-raise the KeyboardInterrupt unchanged -- the operator
+                # asked to abort, so the loop above must unwind and its
+                # worktree context manager cleans up.
+                _kill_process_group(proc)
+                proc.wait()
+                stdout_thread.join(timeout=5)
+                stderr_thread.join(timeout=5)
+                raise
 
             stdout_thread.join(timeout=5)
             stderr_thread.join(timeout=5)
@@ -237,7 +273,8 @@ class _SubprocessAdapter:
         if pump_errors:
             # A truncated drain must never masquerade as a good run.
             raise SessionError(
-                f"{self.name} transcript capture failed: {pump_errors[0]!r}"
+                f"{self.name} transcript capture failed: {pump_errors[0]!r}",
+                transcript_path=transcript_path,
             ) from pump_errors[0]
 
         duration_s = time.monotonic() - start

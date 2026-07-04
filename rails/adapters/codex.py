@@ -114,8 +114,13 @@ class CodexAdapter(_SubprocessAdapter):
         return [
             *self.binary,
             "exec",
+            # readonly reviewer sessions use codex's read-only sandbox (it
+            # can read the workspace but not write to it); write sessions use
+            # workspace-write so the agent can apply edits. See
+            # rails/agents/loop.py -- the reviewer must never mutate the
+            # worktree it's judging.
             "-s",
-            "workspace-write",
+            "read-only" if self.readonly else "workspace-write",
             "--json",
             # --ignore-user-config: skip $CODEX_HOME/config.toml -- rails
             # sessions must be deterministic across machines, not inherit

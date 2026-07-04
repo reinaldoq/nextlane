@@ -121,8 +121,14 @@ class GeminiAdapter(_SubprocessAdapter):
             *self.binary,
             "-p",
             prompt,
+            # readonly reviewer sessions use gemini's "default" approval mode
+            # (every edit/tool-use requires an approval that never comes in a
+            # headless run, so nothing gets written); write sessions use
+            # "auto_edit" so the agent can apply edits unattended. See
+            # rails/agents/loop.py -- the reviewer must never mutate the
+            # worktree it's judging.
             "--approval-mode",
-            "auto_edit",
+            "default" if self.readonly else "auto_edit",
             "-o",
             "stream-json",
         ]

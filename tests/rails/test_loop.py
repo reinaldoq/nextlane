@@ -3,9 +3,11 @@
 Every collaborator run_agent_task talks to (adapter, gate, worktree context
 manager, github, journal, clock) is injected, so these tests use FAKES for
 all of them -- no real engine CLI, no real git, no real gh, no network. The
-one un-injected git-touching helper, `_diff`, is monkeypatched directly
-(`rails.agents.loop._diff`) rather than threaded through the public
-signature, matching this task's exact contract for `run_agent_task`.
+un-injected git-touching helpers, `_diff` and `_count_commits`, are
+monkeypatched directly (`rails.agents.loop._diff` / `._count_commits`), and
+the phase-banner console `rails.agents.loop.err_console` is monkeypatched to
+a RecordingConsole so banners can be asserted -- all done by
+`make_runner_kwargs`.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from pathlib import Path
 import pytest
 import typer
 
+from rails.adapters.base import SessionError
 from rails.agents.loop import (
     CHECKLIST,
     parse_verdict,
@@ -32,6 +35,21 @@ from rails.prompts import compose_review
 from rails.worktree import Worktree
 
 # --- shared fakes --------------------------------------------------------
+
+
+class RecordingConsole:
+    """Captures `.print()` calls (rich markup left verbatim) so tests can
+    assert the phase banners the loop emits to err_console."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def print(self, *args, **kwargs) -> None:
+        self.messages.append(" ".join(str(a) for a in args))
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.messages)
 
 
 def make_config(**over) -> RailsConfig:
@@ -86,9 +104,16 @@ class FakeAdapter:
     calls: list[dict] = field(default_factory=list)
 
     def run(self, prompt, *, cwd, timeout_s=1800, extra_env=None):
-        self.calls.append({"prompt": prompt, "cwd": cwd, "extra_env": extra_env})
+        self.calls.append(
+            {"prompt": prompt, "cwd": cwd, "timeout_s": timeout_s, "extra_env": extra_env}
+        )
         idx = len(self.calls) - 1
-        return self.responses[idx] if idx < len(self.responses) else self.responses[-1]
+        resp = self.responses[idx] if idx < len(self.responses) else self.responses[-1]
+        # A queued BaseException (e.g. SessionError) is RAISED, letting a test
+        # drive the loop's mid-session failure path with a real exception.
+        if isinstance(resp, BaseException):
+            raise resp
+        return resp
 
 
 @dataclass
@@ -98,13 +123,13 @@ class FakeGateFn:
     results: list[GateResult]
     calls: list[dict] = field(default_factory=list)
 
-    def __call__(self, cwd, *, env=None):
-        self.calls.append({"cwd": cwd, "env": env})
+    def __call__(self, cwd, *, env=None, total_timeout_s=None):
+        self.calls.append({"cwd": cwd, "env": env, "total_timeout_s": total_timeout_s})
         idx = len(self.calls) - 1
         return self.results[idx] if idx < len(self.results) else self.results[-1]
 
 
-def _gate(ok: bool) -> GateResult:
+def _gate(ok: bool, *, tail: str | None = None) -> GateResult:
     return GateResult(
         ok=ok,
         steps=(
@@ -113,7 +138,7 @@ def _gate(ok: bool) -> GateResult:
                 ok=ok,
                 exit_code=0 if ok else 1,
                 duration_s=0.1,
-                output_tail="" if ok else "boom",
+                output_tail="" if ok else (tail or "boom"),
             ),
         ),
     )
@@ -137,11 +162,14 @@ class FakeOpenPr:
 @dataclass
 class FakeCleanup:
     calls: list[dict] = field(default_factory=list)
+    error: Exception | None = None
 
     def __call__(self, wt, *, repo_root, delete_branch=False, force=False):
         self.calls.append(
             {"wt": wt, "repo_root": repo_root, "delete_branch": delete_branch, "force": force}
         )
+        if self.error is not None:
+            raise self.error
 
 
 def make_worktree_cm(branch: str = "rails/fake-task-abc123"):
@@ -167,10 +195,13 @@ def make_worktree_cm(branch: str = "rails/fake-task-abc123"):
 
 def make_adapters(builder: FakeAdapter, reviewer: FakeAdapter):
     registry = {builder.name: builder, reviewer.name: reviewer}
+    calls: list[dict] = []
 
-    def _make_adapter(engine, cfg):
+    def _make_adapter(engine, cfg, readonly=False):
+        calls.append({"engine": engine, "readonly": readonly})
         return registry[engine]
 
+    _make_adapter.calls = calls
     return _make_adapter
 
 
@@ -191,6 +222,7 @@ def make_runner_kwargs(
     cleanup_fn=None,
     worktree_cm=None,
     diff_text="diff --git a/foo b/foo\n+bar\n",
+    count=1,
     monkeypatch,
 ):
     builder = FakeAdapter(name="claude", responses=builder_responses)
@@ -200,12 +232,16 @@ def make_runner_kwargs(
     wt_cm = worktree_cm or make_worktree_cm()
     open_pr_fn = open_pr_fn or FakeOpenPr()
     cleanup_fn = cleanup_fn or FakeCleanup()
+    console = RecordingConsole()
+    make_adapter = make_adapters(builder, reviewer)
 
     monkeypatch.setattr("rails.agents.loop._diff", lambda wt_path, base="main": diff_text)
+    monkeypatch.setattr("rails.agents.loop._count_commits", lambda wt_path, base="main": count)
     monkeypatch.setattr("rails.agents.loop.cleanup", cleanup_fn)
+    monkeypatch.setattr("rails.agents.loop.err_console", console)
 
     kwargs = dict(
-        make_adapter=make_adapters(builder, reviewer),
+        make_adapter=make_adapter,
         run_gate_fn=gate_fn,
         worktree_cm=wt_cm,
         open_pr_fn=open_pr_fn,
@@ -220,6 +256,8 @@ def make_runner_kwargs(
         wt_cm=wt_cm,
         open_pr_fn=open_pr_fn,
         cleanup_fn=cleanup_fn,
+        console=console,
+        make_adapter=make_adapter,
     )
 
 
@@ -592,7 +630,9 @@ def test_reviewer_engine_defaults_to_claude_for_gemini_builder(monkeypatch):
     open_pr_fn = FakeOpenPr()
     cleanup_fn = FakeCleanup()
     monkeypatch.setattr("rails.agents.loop._diff", lambda wt_path, base="main": "diff")
+    monkeypatch.setattr("rails.agents.loop._count_commits", lambda wt_path, base="main": 1)
     monkeypatch.setattr("rails.agents.loop.cleanup", cleanup_fn)
+    monkeypatch.setattr("rails.agents.loop.err_console", RecordingConsole())
     cfg = make_config(engine="gemini")
 
     run = run_agent_task(
@@ -669,3 +709,242 @@ def test_worktree_created_with_slug_derived_from_title(monkeypatch):
 
     entered = fakes["wt_cm"].entered
     assert len(entered) == 1
+
+
+# === C1: phase banners (operational visibility) =============================
+
+
+def test_phase_banners_emitted_for_each_step(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    text = fakes["console"].text
+    assert "worktree ready" in text
+    assert "transcripts" in text  # so the operator can tail -f
+    assert "builder session" in text
+    assert "gate" in text
+    assert "review verdict" in text
+    assert "PR opened" in text
+    # each banner carries an elapsed-seconds prefix
+    assert "+" in text and "s]" in text
+
+
+def test_gate_red_banner_names_failing_steps(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(False)],  # exhausts retries
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit):
+        run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert "pytest" in fakes["console"].text  # the failing step is named in a banner
+
+
+# === C2: SessionError -> journal error + Exit(1), never a raw crash =========
+
+
+def test_session_error_mid_loop_journals_error_with_transcripts_and_exits(monkeypatch):
+    failing = Path("/repo/.rails-transcripts/reviewer-timeout.jsonl")
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(transcript="builder.jsonl")],
+        reviewer_responses=[SessionError("codex session timed out", transcript_path=failing)],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit) as excinfo:
+        run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert excinfo.value.exit_code == 1
+    record = fakes["recorder"].records[-1]
+    assert record.outcome == "error"
+    # the failing session's transcript is named, plus the builder's collected so far
+    assert str(failing) in record.transcript_paths
+    assert any("builder.jsonl" in p for p in record.transcript_paths)
+    assert len(fakes["open_pr_fn"].calls) == 0
+    # the exception propagated through the worktree context manager (the real
+    # worktree_for's except-branch cleans up + deletes the branch)
+    assert isinstance(fakes["wt_cm"].exited[0], typer.Exit)
+    assert "inspect the failing session transcript" in fakes["console"].text
+
+
+def test_session_error_on_first_builder_call_still_journals_error(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[SessionError("claude failed to start")],  # no transcript_path
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit):
+        run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert fakes["recorder"].records[-1].outcome == "error"
+    assert len(fakes["gate_fn"].calls) == 0  # died before the gate even ran
+
+
+# === I1: summary before cleanup; cleanup failure only warns =================
+
+
+def test_cleanup_failure_on_happy_path_still_pr_opened_and_summary_printed(monkeypatch, capsys):
+    cleanup_fn = FakeCleanup(error=RuntimeError("worktree still locked"))
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        cleanup_fn=cleanup_fn,
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"  # a stale worktree must NOT unwind the PR
+    assert fakes["cleanup_fn"].calls[0]["delete_branch"] is False  # branch kept
+    assert "cleanup failed" in fakes["console"].text  # warned, not raised
+    # the summary table printed to stdout BEFORE the (failing) cleanup ran
+    assert "rails run summary" in capsys.readouterr().out
+
+
+# === I2: empty-diff guard -> no_changes, skip review ========================
+
+
+def test_empty_branch_after_green_gate_is_no_changes_and_skips_review(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        count=0,  # zero commits on the branch
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit) as excinfo:
+        run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert excinfo.value.exit_code == 1
+    assert fakes["recorder"].records[-1].outcome == "no_changes"
+    assert len(fakes["reviewer"].calls) == 0  # reviewer never runs
+    assert len(fakes["open_pr_fn"].calls) == 0
+
+
+# === I3: reviewer adapter is constructed read-only ==========================
+
+
+def test_reviewer_adapter_constructed_readonly_builder_is_not(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    calls = fakes["make_adapter"].calls
+    builder_call = next(c for c in calls if c["engine"] == "claude")
+    reviewer_call = next(c for c in calls if c["engine"] == "codex")
+    assert builder_call["readonly"] is False
+    assert reviewer_call["readonly"] is True
+
+
+# === I4a: whole-run budget cap ==============================================
+
+
+def test_zero_budget_exhaustion_journals_timeout_and_exits_before_any_session(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    with pytest.raises(typer.Exit) as excinfo:
+        run_agent_task(
+            cfg, task_kind="feature", task_body="x", title="feat: x", total_timeout_s=0, **kwargs
+        )
+
+    assert excinfo.value.exit_code == 1
+    assert fakes["recorder"].records[-1].outcome == "timeout"
+    assert len(fakes["builder"].calls) == 0  # aborted before spending any budget
+
+
+def test_session_and_gate_get_a_timeout_bounded_by_remaining_budget(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", total_timeout_s=600, **kwargs
+    )
+
+    builder_timeout = fakes["builder"].calls[0]["timeout_s"]
+    gate_timeout = fakes["gate_fn"].calls[0]["total_timeout_s"]
+    assert 0 < builder_timeout <= 600
+    assert gate_timeout is not None
+    assert 0 < gate_timeout <= 600
+
+
+# === I4b: session-anomaly warning (ok but no explicit result) ===============
+
+
+def test_ok_session_without_explicit_result_emits_warning(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(ok=True, explicit_result=False)],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(cfg, task_kind="feature", task_body="x", title="feat: x", **kwargs)
+
+    assert run.outcome == "pr_opened"  # a warning, not a failure
+    assert "no terminal result event" in fakes["console"].text
+
+
+# === M1: retry prompt recomposed from the ORIGINAL, not nested ==============
+
+
+def test_retry_prompt_uses_latest_gate_summary_only_not_stale_ones(monkeypatch):
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(), make_session(), make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[
+            _gate(False, tail="FAIL_ONE"),
+            _gate(False, tail="FAIL_TWO"),
+            _gate(True),
+        ],
+        monkeypatch=monkeypatch,
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg, task_kind="feature", task_body="x", title="feat: x", max_retries=2, **kwargs
+    )
+
+    assert run.retries == 2
+    # the SECOND retry's prompt (builder call index 2) must carry ONLY the
+    # latest gate summary -- the nesting bug would leave FAIL_ONE in it too.
+    retry2_prompt = fakes["builder"].calls[2]["prompt"]
+    assert "FAIL_TWO" in retry2_prompt
+    assert "FAIL_ONE" not in retry2_prompt

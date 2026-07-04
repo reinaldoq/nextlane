@@ -29,8 +29,20 @@ from pathlib import Path
 #: green but the caller asked to stop short of opening a PR (used for
 #: inspection runs); distinct from "pr_opened" (gate green AND a PR exists)
 #: and from "gate_failed"/"error" (something went wrong).
+#: "no_changes" (Task 6): the gate went green but the agent left ZERO commits
+#: on the branch -- nothing to review or open a PR for.
+#: "timeout" (Task 6): the whole-run wall-clock budget was exhausted before
+#: the run finished.
 VALID_OUTCOMES = frozenset(
-    {"pr_opened", "gate_failed", "review_rejected", "error", "completed_no_pr"}
+    {
+        "pr_opened",
+        "gate_failed",
+        "review_rejected",
+        "error",
+        "completed_no_pr",
+        "no_changes",
+        "timeout",
+    }
 )
 
 

@@ -17,15 +17,17 @@ _MODULE_POINTER = (
     "\n\nFollow the module pattern in AGENTS.md (the `vehicles` module is the reference)."
 )
 
-_TITLE_MAX_LEN = 60
+_TITLE_MAX_LEN = 55
 
 
 def _title_from_spec(spec: str, *, max_len: int = _TITLE_MAX_LEN) -> str:
-    """`feat: <first ~max_len chars of spec>` -- whitespace (including
-    newlines, for a multi-line spec) collapsed to single spaces first so the
-    PR title/commit-adjacent title is always one clean line."""
+    """`feat(rails-run): <first ~max_len chars of spec>` -- the `rails-run`
+    conventional-commit scope lets the operator (and the PR panel) spot
+    agent-authored PRs at a glance. Whitespace (including newlines, for a
+    multi-line spec) is collapsed to single spaces first so the title is
+    always one clean line."""
     flattened = " ".join(spec.split())
-    return f"feat: {flattened[:max_len].rstrip()}"
+    return f"feat(rails-run): {flattened[:max_len].rstrip()}"
 
 
 def build_feature(
@@ -39,7 +41,7 @@ def build_feature(
     """Run the build-feature task end-to-end: `spec` (a plain-language
     description of the feature) becomes the task body, with a pointer to the
     `vehicles` reference module appended; `title` is derived from the first
-    ~60 characters of `spec`. Delegates everything else -- worktree, gate,
+    ~55 characters of `spec`. Delegates everything else -- worktree, gate,
     cross-vendor review, PR -- to `run_agent_task`."""
     return run_agent_task(
         cfg,
