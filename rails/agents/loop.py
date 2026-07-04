@@ -64,6 +64,28 @@ subprocess this loop launches (builder AND reviewer sessions, plus our own
 `run_gate_fn` calls) so that test stays skipped inside a rails-driven run.
 `DATABASE_URL` rides in the same dict because the agent's in-session
 `just gate` (and our own `run_gate_fn`) needs a live Postgres for pytest.
+
+Self-improvement flywheel (the explicit "we also need a self-learning
+self-improvement mechanism" requirement): the loop is the hinge between the
+two halves.
+  - FORWARD channel: `_read_learnings` reads the committed, human-curated
+    `rails/LEARNINGS.md` and `compose()` injects it into every builder
+    prompt (original, retry, AND revision -- retries/revisions reuse
+    `original_prompt` verbatim) so accumulated lessons compound forward into
+    every future run.
+  - PROPOSAL channel: once a run is about to end in outcome="pr_opened", ONE
+    extra read-only "retro" session (`compose_retro`, same builder engine)
+    reflects on the run's own diff + final review/gate summary and proposes
+    0-3 generalizable lessons (`parse_retro_lessons`; `NONE` or an empty/
+    unparseable reply yields zero). Proposals are NEVER auto-written to
+    LEARNINGS.md -- they land in a "## Proposed LEARNINGS" section of the PR
+    body and in the journal's `proposed_learnings` field, both purely
+    advisory; a human curates the actual file by hand when merging (or in a
+    follow-up commit). The retro is bounded to exactly one session, skipped
+    entirely on `retro=False` (`--no-retro`) or any non-pr_opened outcome,
+    and a `SessionError` inside it is caught and swallowed (logged as a
+    warning, `proposed_learnings=[]`) rather than failing a run whose PR is
+    otherwise ready to open.
 """
 
 from __future__ import annotations
@@ -88,7 +110,7 @@ from rails.gate import GateResult, run_gate
 from rails.github import GitHubError
 from rails.journal import RunRecord
 from rails.journal import record as journal_record
-from rails.prompts import compose, compose_retry, compose_review
+from rails.prompts import compose, compose_retro, compose_retry, compose_review
 from rails.worktree import cleanup, worktree_for
 
 console = Console()
@@ -148,6 +170,38 @@ def parse_verdict(final_message: str) -> str:
         if match:
             return match.group(1).upper()
     return "REQUEST_CHANGES"
+
+
+_RETRO_NONE_RE = re.compile(r"^\s*NONE\s*$", re.IGNORECASE)
+_RETRO_BULLET_RE = re.compile(r"^(?:[-*]|\d+[.)])\s+(.*)$")
+_MAX_RETRO_LESSONS = 3
+
+
+def parse_retro_lessons(final_message: str, *, max_lessons: int = _MAX_RETRO_LESSONS) -> list[str]:
+    """Parse a retro session's `final_message` (see `rails.prompts.compose_retro`)
+    into 0-`max_lessons` proposed-lesson strings.
+
+    The literal token `NONE` (any case, whitespace-tolerant, as the entire
+    message) -- or an empty/blank message -- means "nothing generalizable
+    this run" and yields `[]`, never a fabricated lesson. Lines starting with
+    a markdown bullet (`-`, `*`) or a numbered prefix (`1.`, `2)`) have that
+    prefix stripped and are taken one-per-line; a reply with NO bullet-style
+    lines at all falls back to treating every non-blank line as one lesson
+    (so a plain-prose reply still yields something usable instead of
+    silently zero). Always capped at `max_lessons`, regardless of how many
+    lines the engine produced -- a runaway reply must never balloon the PR
+    body or the journal."""
+    stripped = final_message.strip()
+    if not stripped or _RETRO_NONE_RE.match(stripped):
+        return []
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    bulleted = []
+    for line in lines:
+        match = _RETRO_BULLET_RE.match(line)
+        if match:
+            bulleted.append(match.group(1).strip())
+    lessons = bulleted if bulleted else lines
+    return lessons[:max_lessons]
 
 
 def slug_from(title: str, *, max_len: int = 40) -> str:
@@ -223,6 +277,23 @@ def _has_uncommitted_changes(wt_path: Path) -> bool:
         check=True,
     )
     return bool(result.stdout.strip())
+
+
+def _read_learnings(repo_root: Path) -> str | None:
+    """Read `<repo_root>/rails/LEARNINGS.md` -- the self-improvement
+    flywheel's forward channel (see the module docstring and
+    `rails.prompts.compose`'s `learnings` param): a human-curated file
+    injected into EVERY future agent prompt. Returns `None` (never raises)
+    when the file doesn't exist yet -- a fresh checkout, or a repo that
+    hasn't seeded it -- so `compose()` simply omits the section. Not an
+    injected collaborator, like `_diff`/`_count_commits`/
+    `_has_uncommitted_changes`: tests monkeypatch
+    `rails.agents.loop._read_learnings` directly."""
+    path = repo_root / "rails" / "LEARNINGS.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def _auto_commit(wt_path: Path, *, message: str) -> None:
@@ -302,6 +373,7 @@ def run_agent_task(
     reviewer_engine: str | None = None,
     max_retries: int = 2,
     open_pr: bool = True,
+    retro: bool = True,
     total_timeout_s: int = _DEFAULT_TOTAL_TIMEOUT_S,
     # injected collaborators (default to real; tests pass fakes):
     make_adapter=get_adapter,
@@ -323,6 +395,14 @@ def run_agent_task(
     underlying `GitHubError` re-raised for a PR-open failure -- in every case
     from INSIDE the `worktree_cm` block, so its exception path force-cleans
     the worktree and deletes the branch (see `rails.worktree.worktree_for`).
+
+    `retro` (self-improvement flywheel, default True): when the run is about
+    to end in outcome="pr_opened", run exactly ONE extra, read-only "retro"
+    session (same builder engine) that proposes 0-3 generalizable lessons
+    for `rails/LEARNINGS.md` -- see the module docstring's "Self-improvement
+    flywheel" section for the full contract (never auto-written, bounded to
+    one session, failure-isolated). `--no-retro` on `build-feature` threads
+    through to this flag.
     """
     start = time.monotonic()
     deadline = start + total_timeout_s
@@ -340,6 +420,7 @@ def run_agent_task(
     sessions: list[SessionResult] = []
     retries = 0
     review_verdict: str | None = None
+    proposed_learnings: list[str] = []
 
     with worktree_cm(slug_from(title), repo_root=cfg.repo_root) as wt:
         transcript_dir = wt.path / ".rails-transcripts"
@@ -373,6 +454,7 @@ def run_agent_task(
                 outcome=outcome,
                 transcript_paths=paths,
                 review_verdict=review_verdict,
+                proposed_learnings=proposed_learnings,
             )
             record_fn(run)
             return run
@@ -427,11 +509,61 @@ def run_agent_task(
                 _phase(f"[bold red]✗ gate red -- failing steps: {failed}[/bold red]")
             return result
 
+        def _run_retro(prompt: str) -> list[str]:
+            """The self-improvement flywheel's per-run retro session: ONE
+            extra, read-only session on the SAME builder engine (never the
+            reviewer), asking it to propose 0-3 generalizable lessons (see
+            `rails.prompts.compose_retro`). Bounded and failure-isolated by
+            design -- called ONLY from the pr_opened path (never on a failed
+            outcome), and a `SessionError` here is caught and swallowed
+            (logged as a warning, empty proposal) rather than raised: the
+            run's PR is otherwise ready to open and must not be sacrificed
+            over a reflection step. Budget-exhaustion is handled the same
+            way (a hard `_budget_or_exit` would itself raise and abort the
+            run, which is exactly what must NOT happen here)."""
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _phase("[yellow]⚠ retro skipped: no run budget remaining[/yellow]")
+                return []
+            timeout_s = max(1, min(300, int(remaining)))
+            # A FRESH readonly adapter for the builder's engine -- distinct
+            # from `builder` (constructed readonly=False) even though it may
+            # be the very same underlying CLI, mirroring how the reviewer is
+            # always constructed readonly (I3): a reflection session must
+            # never mutate the worktree either.
+            retro_adapter = make_adapter(engine, cfg, readonly=True)
+            _phase(f"▶ retro session ({retro_adapter.name}) …")
+            try:
+                session = retro_adapter.run(
+                    prompt, cwd=wt.path, timeout_s=timeout_s, extra_env=extra_env
+                )
+            except SessionError as exc:
+                _phase(
+                    f"[yellow]⚠ retro session failed -- no proposed learnings this run "
+                    f"(the PR is already ready to open regardless): {exc}[/yellow]"
+                )
+                return []
+            sessions.append(session)  # cost_usd still sums across ALL sessions, incl. retro
+            lessons = parse_retro_lessons(session.final_message)
+            _phase(
+                f"retro proposed {len(lessons)} lesson(s) for rails/LEARNINGS.md "
+                "(human review required before adding them)"
+            )
+            return lessons
+
         _phase(f"worktree ready: branch [bold]{wt.branch}[/bold] at {wt.path}")
         _phase(f"transcripts under {transcript_dir} (tail -f to follow the live session)")
 
         # --- build ---
-        original_prompt = compose(task_kind, task_body, engine_label=f"{engine} (rails)")
+        # Self-improvement flywheel, forward channel: inject the committed,
+        # human-curated rails/LEARNINGS.md (if any) into the ORIGINAL prompt
+        # -- retries/revisions below recompose FROM this same original_prompt
+        # (see M1), so accumulated lessons ride along into every session of
+        # this run without being re-read or re-injected each time.
+        learnings = _read_learnings(cfg.repo_root)
+        original_prompt = compose(
+            task_kind, task_body, engine_label=f"{engine} (rails)", learnings=learnings
+        )
         sessions.append(
             _run_session(builder, original_prompt, label="builder session", gate_ok=False)
         )
@@ -538,6 +670,24 @@ def run_agent_task(
             _print_summary(run)
             return run
 
+        # --- self-improvement flywheel: per-run retro (PROPOSAL channel) ---
+        # Only reached on the path that WILL open a PR (every failed outcome
+        # above already raised/returned) -- exactly the "outcome pr_opened"
+        # condition the spec requires. `retro=False` (--no-retro) skips it
+        # entirely; nothing here ever writes rails/LEARNINGS.md itself.
+        if retro:
+            final_review_message = (
+                final_review_session.final_message if revised else review_session.final_message
+            )
+            retro_diff = final_diff if revised else diff
+            retro_review_summary = (
+                f"Final review verdict: {review_verdict}\n\n{final_review_message}"
+            )
+            retro_prompt = compose_retro(task_body, retro_diff, retro_review_summary)
+            proposed_learnings = _run_retro(retro_prompt)
+        else:
+            _phase("retro skipped (--no-retro)")
+
         summary_text = sessions[0].final_message or title
         if not revised:
             journal_note = f"Cross-vendor review by {reviewer_engine} (rails): {review_verdict}"
@@ -560,6 +710,16 @@ def run_agent_task(
             engine_label=f"{engine} (rails)",
             journal_note=journal_note,
         )
+        if proposed_learnings:
+            # Human-gated: PROPOSE only, in the PR body a reviewer reads --
+            # never auto-write rails/LEARNINGS.md itself.
+            lessons_md = "\n".join(f"- {lesson}" for lesson in proposed_learnings)
+            body = (
+                f"{body}\n\n"
+                "## Proposed LEARNINGS (human-gated — review before adding to "
+                "rails/LEARNINGS.md)\n"
+                f"{lessons_md}"
+            )
         _phase("▶ opening PR …")
         try:
             pr_url = open_pr_fn(worktree=wt, title=title, body=body, repo_root=cfg.repo_root)

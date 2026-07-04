@@ -37,12 +37,15 @@ def build_feature(
     engine: str | None = None,
     reviewer: str | None = None,
     open_pr: bool = True,
+    retro: bool = True,
 ) -> RunRecord:
     """Run the build-feature task end-to-end: `spec` (a plain-language
     description of the feature) becomes the task body, with a pointer to the
     `vehicles` reference module appended; `title` is derived from the first
     ~55 characters of `spec`. Delegates everything else -- worktree, gate,
-    cross-vendor review, PR -- to `run_agent_task`."""
+    cross-vendor review, PR, and the self-improvement flywheel's per-run
+    retro (`retro`, default True; `--no-retro` on the CLI threads through
+    here) -- to `run_agent_task`."""
     return run_agent_task(
         cfg,
         task_kind="feature",
@@ -51,4 +54,5 @@ def build_feature(
         engine=engine,
         reviewer_engine=reviewer,
         open_pr=open_pr,
+        retro=retro,
     )

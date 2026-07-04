@@ -119,6 +119,25 @@ def test_build_feature_defaults_engine_reviewer_none_open_pr_true(fake_run_agent
     assert call["open_pr"] is True
 
 
+# --- retro (self-improvement flywheel) pass-through -------------------------
+
+
+def test_build_feature_defaults_retro_true(fake_run_agent_task):
+    cfg = make_config()
+
+    build_feature(cfg, "Add a widget")
+
+    assert fake_run_agent_task[0]["retro"] is True
+
+
+def test_build_feature_passes_retro_explicit_false(fake_run_agent_task):
+    cfg = make_config()
+
+    build_feature(cfg, "Add a widget", retro=False)
+
+    assert fake_run_agent_task[0]["retro"] is False
+
+
 def test_build_feature_passes_cfg_through(fake_run_agent_task):
     cfg = make_config(engine="gemini")
 

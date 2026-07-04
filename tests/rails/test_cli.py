@@ -104,15 +104,32 @@ def test_build_feature_help_shows_engine_reviewer_no_pr_flags():
     assert "inspection" in (no_pr.help or "")
 
 
+def test_build_feature_help_shows_retro_flag():
+    """Self-improvement flywheel: --no-retro skips the per-run retro. A
+    `--flag/--no-flag` boolean pair is stored across BOTH `opts` (the true
+    form) and `secondary_opts` (the false form) by click/typer -- unlike the
+    single-form `--no-pr` above, so both must be checked here."""
+    from typer.main import get_command
+
+    build_feature_cmd = get_command(app).commands["build-feature"]
+    opts = {
+        opt
+        for param in build_feature_cmd.params
+        for opt in [*getattr(param, "opts", []), *getattr(param, "secondary_opts", [])]
+    }
+    assert {"--retro", "--no-retro"} <= opts
+
+
 def test_build_feature_calls_agent_with_spec_and_defaults(monkeypatch):
     seen = {}
 
-    def fake_build_feature(cfg, spec, *, engine, reviewer, open_pr):
+    def fake_build_feature(cfg, spec, *, engine, reviewer, open_pr, retro):
         seen["cfg"] = cfg
         seen["spec"] = spec
         seen["engine"] = engine
         seen["reviewer"] = reviewer
         seen["open_pr"] = open_pr
+        seen["retro"] = retro
         return object()
 
     monkeypatch.setattr("rails.cli._build_feature", fake_build_feature)
@@ -125,15 +142,17 @@ def test_build_feature_calls_agent_with_spec_and_defaults(monkeypatch):
     assert seen["engine"] is None
     assert seen["reviewer"] is None
     assert seen["open_pr"] is True
+    assert seen["retro"] is True
 
 
 def test_build_feature_plumbs_engine_reviewer_and_no_pr_flags(monkeypatch):
     seen = {}
 
-    def fake_build_feature(cfg, spec, *, engine, reviewer, open_pr):
+    def fake_build_feature(cfg, spec, *, engine, reviewer, open_pr, retro):
         seen["engine"] = engine
         seen["reviewer"] = reviewer
         seen["open_pr"] = open_pr
+        seen["retro"] = retro
         return object()
 
     monkeypatch.setattr("rails.cli._build_feature", fake_build_feature)
@@ -149,6 +168,7 @@ def test_build_feature_plumbs_engine_reviewer_and_no_pr_flags(monkeypatch):
             "--reviewer",
             "claude",
             "--no-pr",
+            "--no-retro",
         ],
     )
 
@@ -156,6 +176,7 @@ def test_build_feature_plumbs_engine_reviewer_and_no_pr_flags(monkeypatch):
     assert seen["engine"] == "codex"
     assert seen["reviewer"] == "claude"
     assert seen["open_pr"] is False
+    assert seen["retro"] is False
 
 
 # --- CLI: triage (wired in Task 8) --------------------------------------

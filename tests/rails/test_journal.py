@@ -73,13 +73,25 @@ def test_run_record_is_frozen():
 
 def test_new_stamps_schema_version():
     run = RunRecord.new(**_make_kwargs())
-    assert run.schema_version == 2
+    assert run.schema_version == 3
 
 
 def test_new_defaults_transcript_paths_and_review_verdict():
     run = RunRecord.new(**_make_kwargs())
     assert run.transcript_paths == []
     assert run.review_verdict is None
+
+
+def test_new_defaults_proposed_learnings_empty():
+    run = RunRecord.new(**_make_kwargs())
+    assert run.proposed_learnings == []
+
+
+def test_new_accepts_proposed_learnings():
+    run = RunRecord.new(
+        **_make_kwargs(proposed_learnings=["Always X because Y", "Watch out for Z"])
+    )
+    assert run.proposed_learnings == ["Always X because Y", "Watch out for Z"]
 
 
 def test_new_accepts_transcript_paths_and_review_verdict():
@@ -108,7 +120,7 @@ def test_from_row_fills_missing_schema_version_with_default():
 
     restored = RunRecord.from_row(row)
 
-    assert restored.schema_version == 2
+    assert restored.schema_version == 3
     assert restored == run  # the default makes it round-trip-equal
 
 
@@ -135,6 +147,21 @@ def test_from_row_fills_missing_review_verdict_with_none():
     restored = RunRecord.from_row(row)
 
     assert restored.review_verdict is None
+
+
+def test_from_row_fills_missing_proposed_learnings_via_default_factory():
+    """proposed_learnings uses `field(default_factory=list)`, not a plain
+    `default=` -- from_row must call the factory (a fresh empty list) for a
+    pre-Phase-3 line that lacks the field entirely, mirroring
+    transcript_paths' existing tolerance test."""
+    run = RunRecord.new(**_make_kwargs())
+    row = dataclasses.asdict(run)
+    del row["proposed_learnings"]
+
+    restored = RunRecord.from_row(row)
+
+    assert restored.proposed_learnings == []
+    assert restored == run
 
 
 def test_from_row_fills_missing_optional_field_with_none():
@@ -175,7 +202,7 @@ def test_load_tolerates_old_and_future_schema_lines(tmp_path):
 
     assert len(loaded) == 2
     assert loaded[0].task_summary == "old line"
-    assert loaded[0].schema_version == 2
+    assert loaded[0].schema_version == 3
     assert loaded[1].task_summary == "future line"
 
 

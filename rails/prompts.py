@@ -50,7 +50,9 @@ def wrap_untrusted(text: str) -> str:
     return f"<untrusted-data>\n{escaped}\n</untrusted-data>"
 
 
-def compose(task_kind: str, task_body: str, *, engine_label: str) -> str:
+def compose(
+    task_kind: str, task_body: str, *, engine_label: str, learnings: str | None = None
+) -> str:
     """The day-2 agent prompt: task framing + rules of engagement.
 
     `task_body` is inserted verbatim -- the CALLER is responsible for
@@ -58,11 +60,24 @@ def compose(task_kind: str, task_body: str, *, engine_label: str) -> str:
     building `task_body`; most of a task body (an operator-typed feature
     spec) is legitimately trusted instruction text, so `compose` does not
     blanket-wrap it.
+
+    `learnings` (the self-improvement flywheel's forward channel -- see
+    `rails/LEARNINGS.md` and `rails.agents.loop._read_learnings`) is a
+    hand-curated, human-gated file: a human decides what goes in it, so --
+    unlike a hostile diff or bug report -- it's trusted content, included
+    plain rather than wrapped as untrusted data. When `None` or empty, the
+    section is omitted entirely (a fresh checkout with no learnings yet).
     """
+    learnings_block = ""
+    if learnings:
+        learnings_block = (
+            "\nAccumulated lessons from past runs in this repo -- apply them:\n"
+            f"{learnings.strip()}\n"
+        )
     return f"""You are working in the Nextlane DMS repository, inside an isolated git worktree.
 
 FIRST: read AGENTS.md at the repo root and follow every convention it defines. It is the source of truth for how this codebase is built and how modules are structured.
-
+{learnings_block}
 <task kind="{task_kind}">
 {task_body}
 </task>
@@ -131,4 +146,41 @@ VERDICT: APPROVE
 VERDICT: REQUEST_CHANGES
 
 If you choose REQUEST_CHANGES, list the specific, actionable reasons above that line.
+"""
+
+
+def compose_retro(task_body: str, diff: str, review_summary: str) -> str:
+    """The per-run retro prompt (the self-improvement flywheel's other half
+    of `compose`'s `learnings` injection): asks the BUILDER engine, running
+    READ-ONLY, to reflect on the run it just finished and PROPOSE 0-3
+    concise, generalizable lessons for future agents in this repo --
+    NEVER to edit anything, and never to auto-write `rails/LEARNINGS.md`
+    itself (see `rails.agents.loop.run_agent_task`'s retro session: the
+    proposals land in the PR body for a human to curate).
+
+    `diff` is the run's own PR diff -- like `compose_review`, ALWAYS wrapped
+    as untrusted data, since a diff's CONTENT (code comments, string
+    literals) is attacker-influenceable even though the commits are this
+    run's own. `review_summary` is our own gate/review output (mirrors
+    `compose_retry`'s gate_summary and `compose_review`'s checklist), so
+    it's included plain.
+    """
+    return f"""You just finished a coding task in the Nextlane DMS repository. Take a step back and reflect -- do not edit any files, this is a read-only reflection session.
+
+<task-recap>
+{task_body}
+</task-recap>
+
+{wrap_untrusted(diff)}
+
+Review/gate summary from this run:
+{review_summary}
+
+Propose 0 to 3 concise, GENERALIZABLE lessons that future agents working in this repo should know -- the kind of rule that would have saved time or avoided a mistake this run, and that applies beyond this one task (not a summary of what you did or a restatement of AGENTS.md).
+
+Respond with EITHER:
+- 0 to 3 lines, each starting with "- ", one lesson per line (each a concise, actionable rule with a short reason), OR
+- the single literal word NONE if nothing here is worth generalizing.
+
+Do not include anything else after those lines.
 """

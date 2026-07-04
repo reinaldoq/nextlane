@@ -173,6 +173,19 @@ The loop opens a PR **only on a green final gate**, and only after an
 independent, read-only, cross-vendor review — it never merges. A human
 always reviews and merges the agent's PR.
 
+### Self-improvement flywheel
+
+`rails/LEARNINGS.md` is a small, committed, **human-curated** file of
+lessons distilled from past runs; every builder prompt (`rails.prompts.
+compose`) has it injected automatically, so you don't need to read it
+yourself -- but do follow it once it appears in your prompt. After a PR
+opens, one extra read-only "retro" session proposes 0-3 new, generalizable
+lessons for future runs; these are PROPOSALS ONLY, appended to the PR body
+under "## Proposed LEARNINGS" and to the journal's `proposed_learnings` --
+never auto-written to `rails/LEARNINGS.md` itself. A human decides whether
+to fold a proposal into the file when reviewing/merging. `--no-retro` skips
+the retro session for a given run.
+
 ## Security rules for agents
 
 - Work only inside your assigned git worktree. Never push, never merge,
