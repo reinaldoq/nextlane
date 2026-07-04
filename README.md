@@ -115,15 +115,26 @@ They land in the PR's "Proposed LEARNINGS" section and in the journal
 (`proposed_learnings`) purely as a suggestion; a human decides whether to
 fold one into `rails/LEARNINGS.md` when merging. `--no-retro` skips it.
 
-**Proof it's real:** two cross-vendor dogfood runs have merged through this
+**Proof it's real:** three cross-vendor dogfood runs have merged through this
 exact loop —
 [#18](https://github.com/reinaldoq/nextlane/pull/18) (Claude built a
 `GET /api/vehicles/stats` endpoint + updated web StatCards to one request;
-Codex reviewed → `APPROVE`) and
+Codex reviewed → `APPROVE`),
 [#19](https://github.com/reinaldoq/nextlane/pull/19) (Codex built a "Clear
-filters" toolbar button + Playwright e2e; Claude reviewed → `APPROVE`), both
+filters" toolbar button + Playwright e2e; Claude reviewed → `APPROVE`), and
+[#23](https://github.com/reinaldoq/nextlane/pull/23) (Claude triaged and
+fixed a reported inventory-integration bug; Codex reviewed → `APPROVE`), all
 real headless sessions on subscription CLIs with no API keys — see their
-entries (engine, reviewer, verdict, cost) in `rails/journal/runs.jsonl`.
+entries (engine, reviewer, verdict, cost) in `rails/journal/runs.jsonl`, or
+run `uv run rails runs` for a pretty-printed table of the same data.
+
+**Mission Control:** a live in-app dashboard of these runs at
+[`/mission-control`](https://nextlane-blond.vercel.app/mission-control)
+inside the DMS itself — engine badges, status/verdict chips, cost, PR links,
+and a per-run step timeline, polling `GET /api/runs`/`GET /api/runs/{id}`
+every few seconds (deliberately polling, not Realtime — the API is the read
+path like every other table; the rails runner writes to it directly via
+`rails/mission_control.py`).
 
 | engine | notes |
 | --- | --- |
@@ -140,9 +151,8 @@ and migrations applied — see [`docs/demo-script.md`](docs/demo-script.md).
 
 Named here so a silent omission reads as a decision, not an oversight:
 
-- **Mission Control** (a live in-app run dashboard) — `rails/journal/
-  runs.jsonl` is already its data foundation; deferred as the
-  highest-effort purely-visual piece, may be added later.
+- **Mission Control** — shipped (see above): a live in-app run dashboard at
+  `/mission-control`, the one sanctioned post-Phase-1-freeze app addition.
 - **Langfuse** — declined as a redundant third trace sink on top of the
   committed journal + the per-session local transcripts already on disk.
 - **`rails eval`** (an agentic golden-task harness) — the deterministic

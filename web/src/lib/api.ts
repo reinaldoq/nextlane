@@ -137,3 +137,56 @@ export interface VehicleStats {
   sold: number
   total: number
 }
+
+// --- Mission Control ---------------------------------------------------
+// Read-only view of rails/mission_control.py's writes to the hosted
+// agent_runs/run_steps tables (see supabase/migrations/<ts>_mission_control.sql).
+// GET /api/runs and GET /api/runs/{id} are the sole read path -- there is no
+// write route here; the rails runner writes directly to the hosted project.
+
+export type RunEngine = 'claude' | 'codex' | 'gemini'
+
+export type RunStatus =
+  | 'running'
+  | 'pr_opened'
+  | 'gate_failed'
+  | 'no_changes'
+  | 'timeout'
+  | 'error'
+  | 'completed_no_pr'
+
+export type ReviewVerdict = 'APPROVE' | 'REQUEST_CHANGES'
+
+/** One row of agent_runs -- a single rails-driven agent task run. */
+export interface AgentRun {
+  id: string
+  ts_iso: string
+  task_kind: string
+  task_summary: string
+  engine: RunEngine
+  reviewer_engine: RunEngine | null
+  status: RunStatus
+  gate_ok: boolean | null
+  retries: number
+  review_verdict: ReviewVerdict | null
+  cost_usd: number | null
+  pr_url: string | null
+  worktree_branch: string | null
+  finished_at: string | null
+}
+
+export type RunStepStatus = 'started' | 'ok' | 'failed'
+
+/** One row of run_steps -- a single phase-banner point within a run. */
+export interface RunStep {
+  id: string
+  run_id: string
+  seq: number
+  phase: string
+  status: RunStepStatus
+  detail: string | null
+  at: string
+}
+
+/** GET /api/runs/{id}: the run plus its ordered (seq asc) steps. */
+export type RunDetail = AgentRun & { steps: RunStep[] }

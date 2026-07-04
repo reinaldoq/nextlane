@@ -1,12 +1,16 @@
 """Typer CLI for the rails runner.
 
 The full command surface: build-feature, triage, migrate, review, gate,
-engines, doctor. Every day-2 agent command (build-feature, triage, migrate)
-shares `rails.agents.loop.run_agent_task`; `review` is the one standalone,
-read-only exception (see `rails.agents.review`). `gate` mirrors `just gate`
-with structured per-step output. `doctor` is a preflight PASS/FAIL report
-(Postgres, engines, `gh auth`, `.env` keys, migrations) meant to be run
-before a live session (see `rails.doctor`).
+engines, doctor, runs. Every day-2 agent command (build-feature, triage,
+migrate) shares `rails.agents.loop.run_agent_task`; `review` is the one
+standalone, read-only exception (see `rails.agents.review`). `gate` mirrors
+`just gate` with structured per-step output. `doctor` is a preflight
+PASS/FAIL report (Postgres, engines, `gh auth`, `.env` keys, migrations)
+meant to be run before a live session (see `rails.doctor`). `runs`
+pretty-prints the local `rails/journal/runs.jsonl` -- a zero-network
+companion to the deployed Mission Control dashboard (`/mission-control`,
+`api/_lib/runs.py`), which reads the HOSTED Supabase project's
+agent_runs/run_steps instead.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import shutil
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from rails.agents.build_feature import build_feature as _build_feature
 from rails.agents.migrate import migrate as _migrate
@@ -23,12 +28,19 @@ from rails.agents.triage import triage as _triage
 from rails.config import RailsConfig
 from rails.doctor import ENGINES, run_doctor
 from rails.gate import run_gate
+from rails.journal import RunRecord
+from rails.journal import load as load_journal
 
 app = typer.Typer(
     name="rails",
     help="Vendor-agnostic AI rails runner for the Nextlane DMS repo.",
     no_args_is_help=True,
 )
+# width=200: `rails runs`' table has a full PR URL in its widest column --
+# without a fixed width, rich falls back to 80 columns whenever it can't
+# detect a real terminal (redirected output, CliRunner tests) and wraps that
+# URL across lines, which is unreadable and untestable via substring checks.
+console = Console(width=200)
 # Errors and diagnostics go to stderr so stdout stays clean for piping.
 err_console = Console(stderr=True)
 
@@ -171,6 +183,55 @@ def doctor() -> None:
     report = run_doctor(cfg)
     typer.echo(report.summary())
     raise typer.Exit(0 if report.ok else 1)
+
+
+def _print_runs_table(records: list[RunRecord]) -> None:
+    """Render `records` (oldest-first, `rails.journal.load()`'s natural
+    append order) as a rich table, newest run first -- the LOCAL,
+    zero-network companion to the deployed Mission Control dashboard (which
+    reads the HOSTED Supabase project's agent_runs/run_steps via
+    GET /api/runs instead). Handles an empty list (a missing journal file
+    loads as `[]` too -- see `rails.journal.load`) with a friendly pointer
+    instead of an empty table."""
+    if not records:
+        console.print(
+            "[dim]No runs recorded yet in rails/journal/runs.jsonl -- run "
+            '`uv run rails build-feature "..."` (or triage/migrate) to record one.[/dim]'
+        )
+        return
+
+    table = Table(title="rails runs (newest first)")
+    table.add_column("engine")
+    table.add_column("task kind")
+    table.add_column("task")
+    table.add_column("verdict")
+    table.add_column("gate")
+    table.add_column("cost (usd)")
+    table.add_column("pr")
+    for run in reversed(records):
+        engine_label = (
+            f"{run.engine} → {run.reviewer_engine}" if run.reviewer_engine else run.engine
+        )
+        table.add_row(
+            engine_label,
+            run.task_kind,
+            run.task_summary,
+            run.review_verdict or "-",
+            "[green]green[/green]" if run.gate_ok else "[red]red[/red]",
+            f"{run.cost_usd:.4f}" if run.cost_usd is not None else "-",
+            run.pr_url or "-",
+        )
+    console.print(table)
+
+
+@app.command()
+def runs() -> None:
+    """Pretty-print the LOCAL `rails/journal/runs.jsonl` (newest first): the
+    builder/reviewer engine pair, task kind, review verdict, gate result,
+    cost, and PR link for every run this checkout has driven. A zero-network
+    companion to the deployed Mission Control dashboard at /mission-control
+    (GET /api/runs), which reads the HOSTED Supabase project instead."""
+    _print_runs_table(load_journal())
 
 
 @app.command()

@@ -16,10 +16,11 @@ from typer.testing import CliRunner
 from rails.cli import ENGINES, app
 from rails.config import RailsConfig, RailsConfigError
 from rails.gate import GateResult, StepResult
+from rails.journal import RunRecord
 
 runner = CliRunner()
 
-COMMANDS = ("build-feature", "triage", "migrate", "review", "gate", "engines", "doctor")
+COMMANDS = ("build-feature", "triage", "migrate", "review", "gate", "engines", "doctor", "runs")
 
 
 def make_config(**over):
@@ -442,6 +443,91 @@ def test_gate_command_passes_repo_root_from_config(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert seen_cwd["cwd"] == tmp_path
+
+
+# --- CLI: runs -----------------------------------------------------------
+#
+# `rails runs` pretty-prints the LOCAL rails/journal/runs.jsonl (see
+# rails.journal) as a table -- a zero-network, always-available companion to
+# the deployed Mission Control dashboard (which reads the HOSTED Supabase
+# project instead via GET /api/runs).
+
+
+def _make_run_record(**overrides) -> RunRecord:
+    defaults = dict(
+        ts_iso="2026-07-04T00:00:00+00:00",
+        task_kind="feature",
+        task_summary="add a widget",
+        engine="claude",
+        reviewer_engine="codex",
+        worktree_branch="rails/add-a-widget-abc123",
+        gate_ok=True,
+        retries=0,
+        duration_s=42.5,
+        cost_usd=0.37,
+        pr_url="https://github.com/reinaldoq/nextlane/pull/1",
+        outcome="pr_opened",
+        review_verdict="APPROVE",
+    )
+    defaults.update(overrides)
+    return RunRecord(**defaults)
+
+
+def test_runs_command_empty_journal_prints_friendly_message(monkeypatch):
+    monkeypatch.setattr("rails.cli.load_journal", lambda: [])
+
+    result = runner.invoke(app, ["runs"])
+
+    assert result.exit_code == 0
+    assert "no runs recorded" in result.stdout.lower()
+    assert "build-feature" in result.stdout
+
+
+def test_runs_command_prints_table_newest_first(monkeypatch):
+    first = _make_run_record(
+        task_summary="add a widget",
+        engine="claude",
+        reviewer_engine="codex",
+        gate_ok=True,
+        review_verdict="APPROVE",
+        cost_usd=1.25,
+        pr_url="https://github.com/reinaldoq/nextlane/pull/18",
+    )
+    second = _make_run_record(
+        task_summary="fix the flaky sort",
+        engine="codex",
+        reviewer_engine="claude",
+        gate_ok=False,
+        review_verdict=None,
+        cost_usd=None,
+        pr_url=None,
+        outcome="gate_failed",
+    )
+    monkeypatch.setattr("rails.cli.load_journal", lambda: [first, second])
+
+    result = runner.invoke(app, ["runs"])
+
+    assert result.exit_code == 0
+    assert "claude" in result.stdout and "codex" in result.stdout
+    assert "APPROVE" in result.stdout
+    assert "green" in result.stdout
+    assert "red" in result.stdout
+    assert "1.2500" in result.stdout
+    assert "pull/18" in result.stdout
+    # newest (last-appended, `second`) is listed BEFORE the older `first`
+    fix_pos = result.stdout.index("fix the flaky sort")
+    widget_pos = result.stdout.index("add a widget")
+    assert fix_pos < widget_pos
+
+
+def test_runs_command_handles_missing_fields_with_placeholder(monkeypatch):
+    run = _make_run_record(review_verdict=None, cost_usd=None, pr_url=None, reviewer_engine=None)
+    monkeypatch.setattr("rails.cli.load_journal", lambda: [run])
+
+    result = runner.invoke(app, ["runs"])
+
+    assert result.exit_code == 0
+    assert "-" in result.stdout
 
 
 # --- RailsConfig.load() -----------------------------------------------------
