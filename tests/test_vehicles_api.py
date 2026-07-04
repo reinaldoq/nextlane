@@ -300,6 +300,29 @@ def test_list_sort_unknown_field_returns_422(db_client: TestClient, auth_headers
     assert r.status_code == 422
 
 
+def test_list_sort_error_lists_allowed_fields(db_client: TestClient, auth_headers: dict):
+    # A caller that sends an unsupported sort field (e.g. an external integration
+    # trying sort=color:asc) must be told which fields ARE sortable so it can
+    # self-correct -- the 422 details enumerate the whitelist, not just echo the
+    # bad input.
+    r = db_client.get("/api/vehicles", params={"sort": "color:asc"}, headers=auth_headers)
+    assert r.status_code == 422
+    body = r.json()
+    assert body["code"] == "validation_error"
+    details = body["details"]
+    assert details["sort"] == "color:asc"
+    assert set(details["allowed_fields"]) == {"created_at", "price_cents", "year", "mileage_km"}
+    assert set(details["allowed_directions"]) == {"asc", "desc"}
+
+
+def test_list_sort_error_flags_bad_direction(db_client: TestClient, auth_headers: dict):
+    # A valid field with an unsupported direction is equally uninformative on its
+    # own; the allowed directions must be surfaced too.
+    r = db_client.get("/api/vehicles", params={"sort": "year:sideways"}, headers=auth_headers)
+    assert r.status_code == 422
+    assert set(r.json()["details"]["allowed_directions"]) == {"asc", "desc"}
+
+
 def test_list_default_sort_is_created_at_desc(db_client: TestClient, auth_headers: dict):
     v1 = create_vehicle(db_client, auth_headers)
     time.sleep(0.01)
