@@ -1,10 +1,12 @@
 """Typer CLI for the rails runner.
 
 The full command surface: build-feature, triage, migrate, review, gate,
-engines. Every day-2 agent command (build-feature, triage, migrate) shares
-`rails.agents.loop.run_agent_task`; `review` is the one standalone,
+engines, doctor. Every day-2 agent command (build-feature, triage, migrate)
+shares `rails.agents.loop.run_agent_task`; `review` is the one standalone,
 read-only exception (see `rails.agents.review`). `gate` mirrors `just gate`
-with structured per-step output.
+with structured per-step output. `doctor` is a preflight PASS/FAIL report
+(Postgres, engines, `gh auth`, `.env` keys, migrations) meant to be run
+before a live session (see `rails.doctor`).
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from rails.agents.migrate import migrate as _migrate
 from rails.agents.review import review as _review
 from rails.agents.triage import triage as _triage
 from rails.config import RailsConfig
+from rails.doctor import ENGINES, run_doctor
 from rails.gate import run_gate
 
 app = typer.Typer(
@@ -28,8 +31,6 @@ app = typer.Typer(
 )
 # Errors and diagnostics go to stderr so stdout stays clean for piping.
 err_console = Console(stderr=True)
-
-ENGINES = ("claude", "codex", "gemini")
 
 
 @app.command("build-feature")
@@ -156,6 +157,20 @@ def gate() -> None:
     result = run_gate(cfg.repo_root)
     typer.echo(result.summary())
     raise typer.Exit(0 if result.ok else 1)
+
+
+@app.command()
+def doctor() -> None:
+    """Preflight check before a live session: local Postgres reachable,
+    each engine on PATH, `gh auth status` ok, `.env` present with the keys
+    the gate/triage need, and migrations applied (the `vehicles` table
+    exists). Prints one PASS/FAIL line per check; exits 0 only if every
+    CRITICAL check passes (an optional engine missing, e.g. gemini, is
+    reported but never fails the run -- see `rails.doctor`)."""
+    cfg = RailsConfig.load()
+    report = run_doctor(cfg)
+    typer.echo(report.summary())
+    raise typer.Exit(0 if report.ok else 1)
 
 
 @app.command()

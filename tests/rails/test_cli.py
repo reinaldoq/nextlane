@@ -19,7 +19,7 @@ from rails.gate import GateResult, StepResult
 
 runner = CliRunner()
 
-COMMANDS = ("build-feature", "triage", "migrate", "review", "gate", "engines")
+COMMANDS = ("build-feature", "triage", "migrate", "review", "gate", "engines", "doctor")
 
 
 def make_config(**over):
