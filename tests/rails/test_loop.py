@@ -271,6 +271,7 @@ def make_runner_kwargs(
     count=1,
     dirty=False,
     touches_tests=True,
+    changed_test_files=("tests/test_repro.py",),
     monkeypatch,
 ):
     builder = FakeAdapter(name="claude", responses=builder_responses)
@@ -290,6 +291,10 @@ def make_runner_kwargs(
     monkeypatch.setattr("rails.agents.loop._auto_commit", auto_commit_fn)
     monkeypatch.setattr(
         "rails.agents.loop._touches_tests", lambda wt_path, base="main": touches_tests
+    )
+    monkeypatch.setattr(
+        "rails.agents.loop._changed_test_files",
+        lambda wt_path, base="main": list(changed_test_files),
     )
     monkeypatch.setattr("rails.agents.loop.cleanup", cleanup_fn)
     monkeypatch.setattr("rails.agents.loop.err_console", console)
@@ -1896,6 +1901,44 @@ def test_enforce_repro_phase_banners_emitted(monkeypatch):
     assert "bug reproduced" in text
     assert "pytest red" in text
     assert "phase 2: fix" in text
+
+
+def test_enforce_repro_deleted_repro_test_in_phase2_ships_without_proof(monkeypatch):
+    """A green FULL gate after phase 2 does not by itself prove the SAME
+    reproduction test went red->green: a fix session could delete or revert it
+    and the suite would still pass with fewer tests. When the phase-1 repro
+    test does not SURVIVE the phase-2 diff, the run still ships (gate is green,
+    the code is valid) but honestly as repro_confirmed=False -- never a false
+    proof."""
+    kwargs, fakes = make_runner_kwargs(
+        builder_responses=[make_session(), make_session()],
+        reviewer_responses=[make_session(final_message="VERDICT: APPROVE")],
+        gate_results=[_gate_multi(pytest_ok=False), _gate(True)],
+        monkeypatch=monkeypatch,
+    )
+    # phase 1 captures the repro test; phase 2's diff no longer contains it
+    # (the fix session deleted/reverted it).
+    seen = iter([["tests/test_repro.py"], []])
+    monkeypatch.setattr(
+        "rails.agents.loop._changed_test_files", lambda wt_path, base="main": next(seen)
+    )
+    cfg = make_config()
+
+    run = run_agent_task(
+        cfg,
+        task_kind="triage",
+        task_body="x",
+        title="fix: x",
+        enforce_repro=True,
+        retro=False,
+        **kwargs,
+    )
+
+    assert run.outcome == "pr_opened"  # still ships -- gate green, code valid
+    assert run.repro_confirmed is False  # but the proof was NOT re-confirmed
+    assert "no longer present" in (run.repro_evidence or "")
+    assert len(fakes["open_pr_fn"].calls) == 1
+    assert "did not survive" in fakes["console"].text
 
 
 def test_enforce_repro_cannot_reproduce_when_pytest_passes_after_bounded_retry(monkeypatch):

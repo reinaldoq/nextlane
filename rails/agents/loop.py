@@ -375,6 +375,28 @@ def _pytest_step(gate_result: GateResult) -> StepResult | None:
     return next((step for step in gate_result.steps if step.name == "pytest"), None)
 
 
+def _changed_test_files(wt_path: Path, *, base: str = "main") -> list[str]:
+    """Python test files under `tests/` the branch's diff since `base` adds or
+    changes (`git diff --name-only base...HEAD`, mirroring `_diff`/
+    `_touches_tests`). Enforced reproduce-then-fix captures this at the end of
+    phase 1 (the reproduction test just written) and re-checks it after phase
+    2: a green FULL gate alone does NOT prove the *same* repro test went
+    red->green -- a fix session could delete or revert it and the suite would
+    still pass with fewer tests. Requiring the phase-1 files to SURVIVE in the
+    phase-2 diff closes that hole. Scoped to `tests/*.py` because the phase-1
+    red signal is the gate's `pytest` step; a `web/e2e/` change can't turn
+    pytest red, so it can't be the reproduction being proven here."""
+    result = subprocess.run(
+        ["git", "-C", str(wt_path), "diff", "--name-only", f"{base}...HEAD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    return [p for p in result.stdout.splitlines() if p.startswith("tests/") and p.endswith(".py")]
+
+
 def _read_learnings(repo_root: Path) -> str | None:
     """Read `<repo_root>/rails/LEARNINGS.md` -- the self-improvement
     flywheel's forward channel (see the module docstring and
@@ -631,6 +653,11 @@ def run_agent_task(
     # red->green PROOF never actually completed.
     repro_confirmed = False
     repro_evidence: str | None = None
+    # The reproduction test file(s) captured at the end of phase 1, re-checked
+    # after phase 2 so a green FULL gate can't be mistaken for the proof if the
+    # fix session quietly deleted/reverted the repro test (see the phase-2
+    # `enforce_repro` block and `_changed_test_files`).
+    repro_test_files: list[str] = []
 
     with worktree_cm(slug_from(title), repo_root=cfg.repo_root) as wt:
         transcript_dir = wt.path / ".rails-transcripts"
@@ -885,6 +912,9 @@ def run_agent_task(
                 raise typer.Exit(1)
 
             _phase(f"[green]✓ bug reproduced — pytest red[/green] (attempt {attempt})")
+            # Remember the reproduction test(s) so phase 2 can prove they
+            # survive (see `_changed_test_files` + the phase-2 block below).
+            repro_test_files = _changed_test_files(wt.path)
             _phase("▶ phase 2: fix (assert green) …")
             original_prompt = compose_fix(
                 task_kind, task_body, engine_label=f"{engine} (rails)", learnings=learnings
@@ -929,17 +959,38 @@ def run_agent_task(
             raise typer.Exit(1)
 
         if enforce_repro:
-            # The full red->green PROOF: phase 1 above already confirmed the
-            # gate's pytest step failed (RED); the retry loop just above
-            # confirmed the FULL gate is now green (GREEN). Both halves
-            # machine-checked -- never a trusted claim from either session.
-            repro_confirmed = True
-            repro_evidence = (
-                f"pytest RED at phase 1 (confirmed on attempt {attempt} of "
-                f"{_MAX_PHASE1_REPRO_ATTEMPTS}), GREEN after fix (phase 2: {retries} "
-                "retry attempt(s))"
-            )
-            _phase(f"[green]✓ enforced reproduce-then-fix confirmed:[/green] {repro_evidence}")
+            # The full red->green PROOF: phase 1 already confirmed the gate's
+            # pytest step failed (RED); the retry loop just above confirmed the
+            # FULL gate is now green (GREEN). The one thing a green full gate
+            # can't prove on its own is that the SAME reproduction test is what
+            # turned green -- a fix session that deleted/reverted the phase-1
+            # test would still leave the suite green with fewer tests. So the
+            # proof is only promoted if every phase-1 repro test SURVIVES in
+            # the phase-2 diff; otherwise the run still ships (the gate is
+            # green, the code is valid) but honestly as repro_confirmed=False.
+            surviving = _changed_test_files(wt.path)
+            repro_survived = all(f in surviving for f in repro_test_files)
+            if repro_survived:
+                repro_confirmed = True
+                repro_evidence = (
+                    f"pytest RED at phase 1 (confirmed on attempt {attempt} of "
+                    f"{_MAX_PHASE1_REPRO_ATTEMPTS}), GREEN after fix (phase 2: {retries} "
+                    f"retry attempt(s)); reproduction test(s) survived: "
+                    f"{', '.join(repro_test_files) or 'n/a'}"
+                )
+                _phase(f"[green]✓ enforced reproduce-then-fix confirmed:[/green] {repro_evidence}")
+            else:
+                repro_confirmed = False
+                repro_evidence = (
+                    "phase 2 turned the gate green but the phase-1 reproduction "
+                    f"test(s) ({', '.join(repro_test_files)}) are no longer present "
+                    "in the diff -- red->green proof NOT re-confirmed; shipping the "
+                    "fix without the enforced-repro guarantee"
+                )
+                _phase(
+                    "[yellow]⚠ reproduction test did not survive phase 2 -- "
+                    "opening PR without the repro proof (repro_confirmed=False)[/yellow]"
+                )
 
         # --- auto-commit rescue: a green gate proves the session's edits are
         # valid, but headless coding agents frequently forget to `git
