@@ -2,9 +2,10 @@
 
 Task 1 scope: the full command surface (build-feature, triage, migrate,
 review, gate, engines) plus a working `engines` command. `gate` was wired in
-Task 4 once rails/gate.py landed. The remaining commands are stubs -- they
-raise typer.Exit(1) after printing "not implemented" -- until their owning
-tasks (5-6) wire them to the real orchestration loop.
+Task 4 once rails/gate.py landed. `build-feature` was wired in Task 6 onto
+the shared agent loop. The remaining commands (triage, migrate, review) stay
+stubs -- they raise typer.Exit(1) after printing "not implemented" -- until
+Task 8 wires them to the same orchestration loop.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import shutil
 import typer
 from rich.console import Console
 
+from rails.agents.build_feature import build_feature as _build_feature
 from rails.config import RailsConfig
 from rails.gate import run_gate
 
@@ -35,10 +37,22 @@ def _not_implemented() -> None:
 
 @app.command("build-feature")
 def build_feature(
-    task: str = typer.Argument(..., help="Plain-language description of the feature to build."),
+    spec: str = typer.Argument(..., help="Plain-language description of the feature to build."),
+    engine: str = typer.Option(
+        None, "--engine", help="Builder engine (claude|codex|gemini). Defaults to RAILS_ENGINE."
+    ),
+    reviewer: str = typer.Option(
+        None,
+        "--reviewer",
+        help="Cross-vendor reviewer engine. Defaults to the other of claude/codex.",
+    ),
+    no_pr: bool = typer.Option(
+        False, "--no-pr", help="Run the full loop but stop short of opening a PR."
+    ),
 ) -> None:
     """Drive a headless agent session to implement a feature end-to-end."""
-    _not_implemented()
+    cfg = RailsConfig.load()
+    _build_feature(cfg, spec, engine=engine, reviewer=reviewer, open_pr=not no_pr)
 
 
 @app.command()

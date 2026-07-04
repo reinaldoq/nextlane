@@ -20,12 +20,18 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 #: The only valid values for `RunRecord.outcome`.
-VALID_OUTCOMES = frozenset({"pr_opened", "gate_failed", "review_rejected", "error"})
+#: "completed_no_pr" (Task 6): the loop's `open_pr=False` path -- gate went
+#: green but the caller asked to stop short of opening a PR (used for
+#: inspection runs); distinct from "pr_opened" (gate green AND a PR exists)
+#: and from "gate_failed"/"error" (something went wrong).
+VALID_OUTCOMES = frozenset(
+    {"pr_opened", "gate_failed", "review_rejected", "error", "completed_no_pr"}
+)
 
 
 @dataclass(frozen=True)
@@ -39,7 +45,7 @@ class RunRecord:
       - fields added in a future phase can likewise be declared with defaults
         so both old and new code read each other's rows.
     Bump it whenever the set of fields changes in a way readers must know
-    about.
+    about. Bumped to 2 in Task 6 for `transcript_paths` / `review_verdict`.
     """
 
     ts_iso: str
@@ -54,7 +60,11 @@ class RunRecord:
     cost_usd: float | None
     pr_url: str | None
     outcome: str
-    schema_version: int = 1
+    # Task 6 additions -- both carry defaults (old rows lack them; from_row
+    # fills the field default / default_factory for whichever is missing).
+    transcript_paths: list[str] = field(default_factory=list)
+    review_verdict: str | None = None
+    schema_version: int = 2
 
     def __post_init__(self) -> None:
         if self.outcome not in VALID_OUTCOMES:
@@ -68,9 +78,10 @@ class RunRecord:
 
         Selects only KNOWN fields (unknown keys from a newer writer are
         ignored) and fills a default for any known field MISSING from the row
-        -- the field's declared default if it has one (e.g. schema_version),
-        otherwise None. That lets old lines (missing later-added fields) and
-        newer lines (carrying fields this code doesn't know) both load.
+        -- the field's declared default (e.g. `schema_version`) or
+        default_factory (e.g. `transcript_paths`) if it has one, otherwise
+        None. That lets old lines (missing later-added fields) and newer
+        lines (carrying fields this code doesn't know) both load.
         """
         kwargs: dict = {}
         for f in dataclasses.fields(cls):
@@ -78,6 +89,8 @@ class RunRecord:
                 kwargs[f.name] = row[f.name]
             elif f.default is not dataclasses.MISSING:
                 kwargs[f.name] = f.default
+            elif f.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
+                kwargs[f.name] = f.default_factory()
             else:
                 kwargs[f.name] = None
         return cls(**kwargs)
@@ -97,12 +110,18 @@ class RunRecord:
         cost_usd: float | None,
         pr_url: str | None,
         outcome: str,
+        transcript_paths: list[str] | None = None,
+        review_verdict: str | None = None,
     ) -> RunRecord:
         """Build a RunRecord, stamping `ts_iso` with the current UTC time.
 
         The sole call site for `datetime.now(UTC)` in this module -- build
         a RunRecord any other way (the dataclass constructor directly) to
-        supply your own `ts_iso`, e.g. deterministically in a test.
+        supply your own `ts_iso`, e.g. deterministically in a test. Task 6's
+        loop builds RunRecords via the constructor directly instead (it
+        injects its own `now_fn`), so this classmethod stays the convenient
+        entry point for callers (and tests) that don't need to fake the
+        clock.
         """
         return cls(
             ts_iso=datetime.now(UTC).isoformat(),
@@ -117,6 +136,8 @@ class RunRecord:
             cost_usd=cost_usd,
             pr_url=pr_url,
             outcome=outcome,
+            transcript_paths=transcript_paths if transcript_paths is not None else [],
+            review_verdict=review_verdict,
         )
 
 

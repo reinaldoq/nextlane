@@ -89,7 +89,6 @@ def test_engines_one_line_per_engine_even_with_long_paths(monkeypatch):
 @pytest.mark.parametrize(
     "args",
     [
-        ["build-feature", "add a widget"],
         ["triage", "last 24h"],
         ["migrate", "add index on vehicles.vin"],
         ["review", "--pr", "123"],
@@ -107,6 +106,72 @@ def test_stub_message_goes_to_stderr_not_stdout():
     assert result.exit_code == 1
     assert "not implemented" in result.stderr.lower()
     assert result.stdout.strip() == ""
+
+
+# --- CLI: build-feature (wired in Task 6) ------------------------------
+
+
+def test_build_feature_help_shows_engine_reviewer_no_pr_flags():
+    result = runner.invoke(app, ["build-feature", "--help"])
+
+    assert result.exit_code == 0
+    assert "--engine" in result.output
+    assert "--reviewer" in result.output
+    assert "--no-pr" in result.output
+
+
+def test_build_feature_calls_agent_with_spec_and_defaults(monkeypatch):
+    seen = {}
+
+    def fake_build_feature(cfg, spec, *, engine, reviewer, open_pr):
+        seen["cfg"] = cfg
+        seen["spec"] = spec
+        seen["engine"] = engine
+        seen["reviewer"] = reviewer
+        seen["open_pr"] = open_pr
+        return object()
+
+    monkeypatch.setattr("rails.cli._build_feature", fake_build_feature)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(app, ["build-feature", "add a widget"])
+
+    assert result.exit_code == 0
+    assert seen["spec"] == "add a widget"
+    assert seen["engine"] is None
+    assert seen["reviewer"] is None
+    assert seen["open_pr"] is True
+
+
+def test_build_feature_plumbs_engine_reviewer_and_no_pr_flags(monkeypatch):
+    seen = {}
+
+    def fake_build_feature(cfg, spec, *, engine, reviewer, open_pr):
+        seen["engine"] = engine
+        seen["reviewer"] = reviewer
+        seen["open_pr"] = open_pr
+        return object()
+
+    monkeypatch.setattr("rails.cli._build_feature", fake_build_feature)
+    monkeypatch.setattr(RailsConfig, "load", staticmethod(lambda: make_config()))
+
+    result = runner.invoke(
+        app,
+        [
+            "build-feature",
+            "add a widget",
+            "--engine",
+            "codex",
+            "--reviewer",
+            "claude",
+            "--no-pr",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen["engine"] == "codex"
+    assert seen["reviewer"] == "claude"
+    assert seen["open_pr"] is False
 
 
 # --- CLI: gate ---------------------------------------------------------
