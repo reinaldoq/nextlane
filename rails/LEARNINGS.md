@@ -34,3 +34,8 @@ plus a one-line "why".
   StatCards' 3 count calls → 1 `/stats` call), preserve the existing UI
   contract exactly — caption text, token colors, loading/empty states — so
   the refactor is invisible to users.
+
+- **When raising a 422 for a whitelist-validated parameter, surface the
+  allowed values in the machine-readable `details` object** (not just the
+  human message) — external integrations parse `details` to self-correct.
+  (Proven in the triage of the invalid-sort bug, PR#23.)
