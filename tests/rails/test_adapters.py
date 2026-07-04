@@ -35,6 +35,15 @@ FIXTURE_CODEX_ERROR = FIXTURES / "codex-transcript-error.txt"
 FIXTURE_CODEX_OUT_FILE = FIXTURES / "codex-out-file.txt"
 FIXTURE_GEMINI_SUCCESS = FIXTURES / "gemini-transcript.txt"
 FIXTURE_GEMINI_ERROR = FIXTURES / "gemini-transcript-error.txt"
+FIXTURE_GEMINI_MULTILINE = FIXTURES / "gemini-transcript-multiline.txt"
+
+GEMINI_MULTILINE_EXPECTED = (
+    "A dealer management system (DMS) is a software platform designed to help "
+    "automotive, heavy equipment, or other dealerships manage their entire "
+    "operations. It integrates various departments like sales, finance, parts, "
+    "and service into a single system. A DMS streamlines workflows, improves "
+    "efficiency, and provides comprehensive reporting for better decision-making."
+)
 
 ARGV_CWD = Path("/work/tree")
 ARGV_OUT = Path("/work/tree/.rails-transcripts/run.out")
@@ -461,7 +470,6 @@ def test_parse_codex_transcript_success_fixture():
     """
     parsed = parse_codex_transcript(
         FIXTURE_CODEX_SUCCESS.read_text().splitlines(),
-        cwd=FIXTURES,
         out_file=FIXTURE_CODEX_OUT_FILE,
     )
 
@@ -477,7 +485,6 @@ def test_parse_codex_transcript_missing_out_file_falls_back_to_stream():
     failure), fall back to the last agent_message text seen in-stream."""
     parsed = parse_codex_transcript(
         FIXTURE_CODEX_SUCCESS.read_text().splitlines(),
-        cwd=FIXTURES,
         out_file=FIXTURES / "does-not-exist.out",
     )
 
@@ -493,7 +500,6 @@ def test_parse_codex_transcript_error_fixture():
     """
     parsed = parse_codex_transcript(
         FIXTURE_CODEX_ERROR.read_text().splitlines(),
-        cwd=FIXTURES,
         out_file=FIXTURES / "does-not-exist.out",
     )
 
@@ -506,7 +512,7 @@ def test_parse_codex_transcript_no_terminal_event():
         json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "partial"}})
     ]
 
-    parsed = parse_codex_transcript(lines, cwd=FIXTURES, out_file=FIXTURES / "does-not-exist.out")
+    parsed = parse_codex_transcript(lines, out_file=FIXTURES / "does-not-exist.out")
 
     assert parsed.final_message == "partial"
     assert parsed.result_ok is True  # no terminal event seen -- exit code alone decides
@@ -609,6 +615,24 @@ def test_parse_gemini_transcript_success_fixture():
     assert parsed.final_message == "pong"
     assert parsed.cost_usd is None
     assert parsed.saw_result is False  # never trusted as authoritative, see module docstring
+
+
+def test_parse_gemini_transcript_multiline_accumulates_delta_fragments():
+    """Parses tests/rails/fixtures/gemini-transcript-multiline.txt, a REAL
+    capture with a multi-sentence reply that streams as TWO assistant
+    `message` events, both `delta:true`. Observed semantics (gemini 0.29.5):
+    delta fragments are INCREMENTAL -- the second event's content starts
+    "... like sales, finance ..." (a continuation), NOT a cumulative repeat
+    of the first. The parser must CONCATENATE them in order; a "last wins"
+    parser would truncate the answer to just the second sentence-and-a-half.
+    """
+    parsed = parse_gemini_transcript(FIXTURE_GEMINI_MULTILINE.read_text().splitlines())
+
+    assert parsed.final_message == GEMINI_MULTILINE_EXPECTED
+    # sanity: both fragments made it in, nothing dropped
+    assert parsed.final_message.startswith("A dealer management system")
+    assert parsed.final_message.endswith("better decision-making.")
+    assert "like sales, finance, parts" in parsed.final_message
 
 
 def test_parse_gemini_transcript_error_fixture_does_not_raise():

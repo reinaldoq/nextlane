@@ -33,12 +33,22 @@ from pathlib import Path
 from rails.adapters.base import ParsedTranscript, _SubprocessAdapter
 
 
-def parse_codex_transcript(lines: list[str], *, cwd: Path, out_file: Path) -> ParsedTranscript:
+def parse_codex_transcript(lines: list[str], *, out_file: Path) -> ParsedTranscript:
     """Parse newline-delimited codex `--json` events plus the `-o` sidecar.
+
+    Free function takes only out_file (not the base seam's cwd) -- codex's
+    parse reads nothing under cwd; the CodexAdapter._parse wrapper keeps cwd
+    in its signature for seam symmetry and drops it here.
 
     - final_message: the `-o` file's contents (stripped) if the file exists
       and is non-empty, else the text of the last `item.completed`
-      `agent_message` item seen in-stream, else "".
+      `agent_message` item seen in-stream, else "". Considered-and-accepted
+      edge: real codex only writes the `-o` file on a successful turn, but
+      if a future codex version wrote a PARTIAL file and then failed, we'd
+      prefer that partial text over the in-stream message -- accepted,
+      because ok=False (from the nonzero exit) already flags the run as
+      failed downstream, so the exact final_message on a failure path is
+      diagnostic-only, not acted upon.
     - cost_usd: always None -- codex reports token counts (`usage` on
       `turn.completed`), never a dollar figure. Tolerated, not computed.
     - result_ok: False only if a `turn.failed` event was seen (and no later
@@ -47,7 +57,6 @@ def parse_codex_transcript(lines: list[str], *, cwd: Path, out_file: Path) -> Pa
     - saw_result: whether a `turn.completed` or `turn.failed` terminal event
       appeared at all; surfaces as SessionResult.explicit_result.
     """
-    del cwd  # part of the base seam; codex needs only out_file, not cwd, to parse
     last_agent_text = ""
     saw_result = False
     result_ok = True
@@ -135,4 +144,5 @@ class CodexAdapter(_SubprocessAdapter):
         ]
 
     def _parse(self, lines: list[str], *, cwd: Path, out_file: Path) -> ParsedTranscript:
-        return parse_codex_transcript(lines, cwd=cwd, out_file=out_file)
+        del cwd  # base seam passes it; codex's parse reads only out_file
+        return parse_codex_transcript(lines, out_file=out_file)

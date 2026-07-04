@@ -44,10 +44,22 @@ from rails.adapters.base import ParsedTranscript, _SubprocessAdapter
 def parse_gemini_transcript(lines: list[str]) -> ParsedTranscript:
     """Parse gemini's `-o stream-json` output, tolerantly.
 
-    - final_message: the last non-empty `content` string of a `{"type":
-      "message", "role": "assistant"}` event, if any such event parsed;
-      else the last non-empty raw stdout line (covers non-JSON output,
-      partial/garbled lines, or a shape gemini changed under us); else "".
+    - final_message: the ACCUMULATED `content` of every `{"type":
+      "message", "role": "assistant"}` event, concatenated in stream order,
+      if any such event parsed; else the last non-empty raw stdout line
+      (covers non-JSON output, partial/garbled lines, or a shape gemini
+      changed under us); else "".
+
+      Accumulation, not "last wins": verified against a real multi-sentence
+      capture (tests/rails/fixtures/gemini-transcript-multiline.txt, gemini
+      0.29.5) that gemini streams a long reply as multiple `delta:true`
+      assistant events whose contents are INCREMENTAL fragments, not
+      cumulative snapshots -- the second fragment begins mid-sentence
+      (" like sales, finance ...") and must be appended to the first, not
+      replace it. gemini emits the fragments already including their own
+      leading spaces, so they concatenate with no inserted separator. A
+      single-fragment reply (e.g. "pong") accumulates to itself, so the
+      short-reply path is unchanged.
     - cost_usd: always None -- gemini reports token counts (`stats` on the
       terminal `result` event), never a dollar figure.
     - result_ok: always True -- never downgraded by parsing; exit code
@@ -58,7 +70,7 @@ def parse_gemini_transcript(lines: list[str]) -> ParsedTranscript:
     Never raises: unparseable lines are skipped, not fatal (best-effort
     engine, degrade gracefully).
     """
-    last_assistant_text = ""
+    assistant_text = ""
     last_nonempty_raw = ""
 
     for raw_line in lines:
@@ -75,9 +87,9 @@ def parse_gemini_transcript(lines: list[str]) -> ParsedTranscript:
         if event.get("type") == "message" and event.get("role") == "assistant":
             content = event.get("content")
             if isinstance(content, str) and content:
-                last_assistant_text = content
+                assistant_text += content
 
-    final_message = last_assistant_text if last_assistant_text else last_nonempty_raw
+    final_message = assistant_text if assistant_text else last_nonempty_raw
 
     return ParsedTranscript(
         final_message=final_message,

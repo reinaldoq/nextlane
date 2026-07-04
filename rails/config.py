@@ -61,6 +61,12 @@ class RailsConfig:
     """Immutable runner configuration. Build via `RailsConfig.load()`."""
 
     engine: str
+    # max_budget_usd is a HARD cap only for claude (its --max-budget-usd
+    # flag). codex and gemini expose no USD budget flag (they report token
+    # counts, not dollars -- see rails/adapters/codex.py & gemini.py), so
+    # for those engines the session blast radius is bounded by timeout +
+    # bounded retries + the sandbox/approval mode ALONE, not by spend. Task
+    # 7's AGENTS.md must state this asymmetry explicitly.
     max_budget_usd: float
     repo_root: Path
 
