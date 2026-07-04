@@ -112,15 +112,21 @@ def test_stub_message_goes_to_stderr_not_stdout():
 
 
 def test_build_feature_help_shows_engine_reviewer_no_pr_flags():
-    result = runner.invoke(app, ["build-feature", "--help"])
+    # Introspect the command's declared options rather than the RENDERED help
+    # string: under a narrow non-TTY with color forced on (CI), rich wraps the
+    # option cells and interleaves ANSI codes, so a substring match on the
+    # rendered `--help` output is width/color-dependent and flaky. The real
+    # contract is that these options exist with the documented help.
+    from typer.main import get_command
 
-    assert result.exit_code == 0
-    assert "--engine" in result.output
-    assert "--reviewer" in result.output
-    assert "--no-pr" in result.output
+    build_feature_cmd = get_command(app).commands["build-feature"]
+    opts = {opt for param in build_feature_cmd.params for opt in getattr(param, "opts", [])}
+    assert {"--engine", "--reviewer", "--no-pr"} <= opts
+
+    no_pr = next(p for p in build_feature_cmd.params if "--no-pr" in getattr(p, "opts", []))
     # M3: the --no-pr help documents that it leaves the worktree/branch for
-    # inspection (rich may wrap the help text, so match on a short token).
-    assert "inspection" in result.output
+    # inspection.
+    assert "inspection" in (no_pr.help or "")
 
 
 def test_build_feature_calls_agent_with_spec_and_defaults(monkeypatch):
