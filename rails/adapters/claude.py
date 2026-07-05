@@ -83,11 +83,12 @@ class ClaudeAdapter(_SubprocessAdapter):
         return ["claude"]
 
     def build_argv(self, prompt: str, *, cwd: Path, out_file: Path) -> list[str]:
-        # cwd/out_file are part of the base seam (codex needs them);
-        # claude needs neither -- Popen sets the working directory and the
+        # cwd/out_file are part of the base seam (codex needs them); claude
+        # needs neither -- Popen sets the working directory (so the relative
+        # --mcp-config path below resolves against the worktree) and the
         # stream-json result arrives on stdout.
         del cwd, out_file
-        return [
+        argv = [
             *self.binary,
             "-p",
             prompt,
@@ -117,6 +118,30 @@ class ClaudeAdapter(_SubprocessAdapter):
             "--max-budget-usd",
             str(self.cfg.max_budget_usd),
         ]
+        # Builder (write) sessions get a read-only docs MCP -- context7 -- so
+        # they look up CURRENT library APIs (antd v6, react-router, fastapi)
+        # instead of hallucinating stale ones. Deliberately scoped:
+        #   - claude only: a claude-specific capability; codex/gemini configure
+        #     MCP differently, so this stays a documented claude exception
+        #     rather than a fake-uniform feature (see rails/AGENTS.md).
+        #   - write sessions only: the read-only reviewer judges a diff, not
+        #     library docs, and must stay minimal.
+        # --strict-mcp-config keeps the session deterministic (ONLY this server
+        # loads, ignoring any ambient ~/.claude or repo .mcp.json); --allowedTools
+        # pre-approves the context7 tools so the headless session never blocks on
+        # a permission prompt. Edits still flow through --permission-mode
+        # acceptEdits (verified: the two coexist).
+        if not self.readonly:
+            argv += [
+                # relative -- claude resolves it against its Popen cwd (the
+                # worktree), where rails/context7.mcp.json is committed.
+                "--mcp-config",
+                "rails/context7.mcp.json",
+                "--strict-mcp-config",
+                "--allowedTools",
+                "mcp__context7",
+            ]
+        return argv
 
     def _parse(self, lines: list[str], *, cwd: Path, out_file: Path) -> ParsedTranscript:
         del cwd, out_file  # claude's result arrives in-stream; nothing to read from disk

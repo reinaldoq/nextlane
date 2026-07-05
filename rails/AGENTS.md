@@ -65,3 +65,17 @@ claude `--setting-sources project,local` (+ `--permission-mode`, read-only for
 reviewers), codex `--ignore-user-config` + read-only sandbox for reviewers,
 gemini best-effort. Tests live in `tests/rails/` (fake-engine); real-engine
 tests are gated behind `RAILS_REAL_ENGINE`.
+
+## Tooling / MCP
+
+The default is deliberately minimal — the agent gets file + shell tools inside
+its worktree, and the deterministic gate is the safety net, not extra tooling.
+One scoped exception: **claude builder sessions get a read-only docs MCP
+(context7)** via `--mcp-config rails/context7.mcp.json --strict-mcp-config
+--allowedTools mcp__context7`, so they look up *current* library APIs (antd v6,
+react-router, fastapi) instead of hallucinating stale ones. It's claude-only on
+purpose (codex/gemini configure MCP through their own mechanisms, so a uniform
+rollout would dent the one-adapter story) and write-session-only (the read-only
+reviewer judges a diff, not docs). No credentialed MCP (Postgres/GitHub) — that
+would duplicate the gate/`gh` CLI and punch a hole in the `allowed_env()`
+secret boundary.
