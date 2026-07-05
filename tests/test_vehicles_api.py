@@ -66,7 +66,13 @@ def test_401_without_token_on_every_route(db_client: TestClient):
 def test_stats_empty_table_returns_all_zeroes(db_client: TestClient, auth_headers: dict):
     r = db_client.get("/api/vehicles/stats", headers=auth_headers)
     assert r.status_code == 200
-    assert r.json() == {"available": 0, "reserved": 0, "sold": 0, "total": 0}
+    assert r.json() == {
+        "available": 0,
+        "reserved": 0,
+        "sold": 0,
+        "total": 0,
+        "total_value_cents": 0,
+    }
 
 
 def test_stats_counts_by_status(db_client: TestClient, auth_headers: dict):
@@ -87,7 +93,36 @@ def test_stats_counts_by_status(db_client: TestClient, auth_headers: dict):
 
     r = db_client.get("/api/vehicles/stats", headers=auth_headers)
     assert r.status_code == 200
-    assert r.json() == {"available": 2, "reserved": 1, "sold": 1, "total": 4}
+    # 4 vehicles at the default 1_500_000 cents each -> 6_000_000 summed.
+    assert r.json() == {
+        "available": 2,
+        "reserved": 1,
+        "sold": 1,
+        "total": 4,
+        "total_value_cents": 6_000_000,
+    }
+
+
+def test_stats_total_value_cents_sums_price_across_all_statuses(
+    db_client: TestClient, auth_headers: dict
+):
+    # total_value_cents sums price_cents over the whole table, regardless of status.
+    a = create_vehicle(db_client, auth_headers, price_cents=1_000_000)
+    b = create_vehicle(db_client, auth_headers, price_cents=2_500_000)
+    create_vehicle(db_client, auth_headers, price_cents=500_000)
+
+    r = db_client.post(
+        f"/api/vehicles/{a['id']}/status", json={"status": "reserved"}, headers=auth_headers
+    )
+    assert r.status_code == 200
+    r = db_client.post(
+        f"/api/vehicles/{b['id']}/status", json={"status": "sold"}, headers=auth_headers
+    )
+    assert r.status_code == 200
+
+    body = db_client.get("/api/vehicles/stats", headers=auth_headers).json()
+    assert body["total_value_cents"] == 4_000_000
+    assert isinstance(body["total_value_cents"], int)
 
 
 def test_stats_counts_are_ints(db_client: TestClient, auth_headers: dict):
