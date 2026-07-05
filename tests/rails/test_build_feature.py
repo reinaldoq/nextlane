@@ -55,6 +55,8 @@ def test_build_feature_appends_module_pointer_to_spec(fake_run_agent_task):
     assert body.startswith("Add a widget")
     assert "AGENTS.md" in body
     assert "vehicles" in body
+    # new-module tasks are explicitly pointed at the scaffold-module skill
+    assert "scaffold-module" in body
 
 
 # --- title -----------------------------------------------------------------

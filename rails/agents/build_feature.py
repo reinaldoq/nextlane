@@ -12,9 +12,17 @@ from rails.journal import RunRecord
 
 # Points the agent at the reference module pattern (formalized in AGENTS.md
 # by Task 7) so a new feature follows the same shape as an existing one
-# instead of improvising its own conventions.
+# instead of improvising its own conventions. For the rarer "add a whole new
+# module" case, it explicitly names the `scaffold-module` skill -- a Claude
+# Code capability, so the clause is written to be a no-op for codex/gemini
+# (which don't load `.claude/skills/`): they simply won't have the skill.
 _MODULE_POINTER = (
-    "\n\nFollow the module pattern in AGENTS.md (the `vehicles` module is the reference)."
+    "\n\nFollow the module pattern in AGENTS.md (the `vehicles` module is the "
+    "reference). If this spec calls for a brand-new module (its own table, "
+    "router, Ant Design page, and tests -- not an extension of an existing "
+    "module) and your engine supports Claude Code skills, use the "
+    "`scaffold-module` skill to generate it from the vehicles pattern instead "
+    "of hand-writing the boilerplate."
 )
 
 _TITLE_MAX_LEN = 55
