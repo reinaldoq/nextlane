@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Alert, Badge, Card, Empty, Flex, Table, Tag, Typography, theme } from 'antd'
+import { Alert, Badge, Card, Empty, Flex, Table, Tag, Tooltip, Typography, theme } from 'antd'
 import type { TableColumnsType } from 'antd'
 import RunDetailDrawer from '../components/RunDetailDrawer'
 import { POLL_INTERVAL_MS, useRunList } from '../hooks/useRunList'
 import type { AgentRun } from '../lib/api'
+import { formatCostUsd } from '../lib/format'
 
 const { Title, Text } = Typography
 
@@ -14,12 +15,6 @@ const ENGINE_LABEL: Record<string, string> = {
   gemini: 'Gemini',
 }
 
-const costFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 4,
-})
 const startedFormatter = new Intl.DateTimeFormat('en-GB', {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -84,6 +79,15 @@ function MissionControlPage() {
         </Tag>
       )
     }
+    if (run.status === 'cannot_reproduce') {
+      // An honest non-result (enforced-repro triage couldn't reproduce the
+      // bug) -- notable, but NOT an error.
+      return (
+        <Tooltip title="Triage could not reproduce the reported bug — no fix, no PR.">
+          <Tag style={chipStyle.warning}>Cannot reproduce</Tag>
+        </Tooltip>
+      )
+    }
     // gate_failed | timeout | error
     return <Tag style={chipStyle.error}>{run.status.replace(/_/g, ' ')}</Tag>
   }
@@ -131,7 +135,25 @@ function MissionControlPage() {
       dataIndex: 'cost_usd',
       key: 'cost_usd',
       align: 'right',
-      render: (cost: number | null) => (cost !== null ? costFormatter.format(cost) : '—'),
+      render: (cost: number | null, run: AgentRun) => {
+        if (cost === null) return '—'
+        // Only claude reports a dollar figure; a run whose builder or reviewer
+        // was codex/gemini shows just the claude portion -- an honest floor,
+        // flagged with a "*" so it never reads as an authoritative total.
+        const partial =
+          run.engine !== 'claude' ||
+          (run.reviewer_engine !== null && run.reviewer_engine !== 'claude')
+        const text = formatCostUsd(cost)
+        if (!partial) return text
+        return (
+          <Tooltip title="Partial — only Claude sessions report a dollar cost; the codex/gemini portion isn't priced by its CLI.">
+            <span>
+              {text}
+              <Text type="secondary">*</Text>
+            </span>
+          </Tooltip>
+        )
+      },
     },
     {
       title: 'Started',
@@ -203,6 +225,16 @@ function MissionControlPage() {
             onClick: () => {
               setSelectedRun(run)
             },
+            onKeyDown: (event) => {
+              // keyboard parity with the click-to-open-drawer affordance
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                setSelectedRun(run)
+              }
+            },
+            tabIndex: 0,
+            role: 'button',
+            'aria-label': `View details for the ${run.task_kind} run`,
             style: { cursor: 'pointer' },
           })}
           locale={{

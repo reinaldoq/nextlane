@@ -12,6 +12,12 @@ dependencies = [
 rails = "rails.cli:app"
 
 [dependency-groups]
+# typer/rich are the `rails` CLI's RUNTIME deps, but they live here (not in
+# [project.dependencies]) on purpose: [project.dependencies] is exported to
+# api/requirements.txt via `just pin-api` and ships to the Vercel serverless
+# function, which must stay minimal and never imports typer/rich. The rails
+# runner is always invoked via `uv run rails`, which installs this group -- so
+# they're available where needed without bloating the api deployment.
 dev = [
   "uvicorn>=0.30",
   "httpx>=0.27",

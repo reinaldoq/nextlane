@@ -156,6 +156,7 @@ export type RunStatus =
   | 'timeout'
   | 'error'
   | 'completed_no_pr'
+  | 'cannot_reproduce'
 
 export type ReviewVerdict = 'APPROVE' | 'REQUEST_CHANGES'
 
