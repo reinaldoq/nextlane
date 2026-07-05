@@ -195,6 +195,14 @@ _DEFAULT_TOTAL_TIMEOUT_S = 5400
 # be reproduced (see `run_agent_task`'s `enforce_repro`).
 _MAX_PHASE1_REPRO_ATTEMPTS = 2
 
+# Cap on how much of a session's final message is stored as a Mission Control
+# step detail. Generous on purpose -- big enough to hold a whole realistic
+# agent summary (so the UI never shows a sentence cut off mid-word), with a
+# sane upper bound so a runaway session can't write a huge row. The web drawer
+# collapses long details behind a "Show more" toggle, so storing the full
+# summary doesn't clutter the default view.
+_MC_DETAIL_MAX_CHARS = 8000
+
 # Derived from docs/superpowers/agents-md-seed.md's conventions (Task 7
 # formalizes these into AGENTS.md proper; this is the concise inline version
 # the cross-vendor reviewer checks a diff against in the meantime).
@@ -759,7 +767,7 @@ def run_agent_task(
                 next(mc_seq),
                 label,
                 "ok" if session.ok else "failed",
-                session.final_message[:500] if session.final_message else None,
+                session.final_message[:_MC_DETAIL_MAX_CHARS] if session.final_message else None,
             )
             return session
 

@@ -1,16 +1,73 @@
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Alert, Descriptions, Drawer, Empty, Spin, Tag, Timeline, Typography, theme } from 'antd'
+import { Alert, Button, Descriptions, Drawer, Empty, Spin, Tag, Timeline, Typography, theme } from 'antd'
 import { ApiError, api, type AgentRun, type RunDetail, type RunStepStatus } from '../lib/api'
 import { formatCostUsd } from '../lib/format'
 import MarkdownLite from './MarkdownLite'
 
 const { Text } = Typography
 
+// Step details longer than either threshold collapse behind a "Show more"
+// toggle so the timeline stays scannable; both dimensions are in px.
+const DETAIL_COLLAPSE_MIN_CHARS = 240
+const DETAIL_COLLAPSE_MIN_LINES = 5
+const DETAIL_COLLAPSED_MAX_HEIGHT = 120
+const DETAIL_FADE_HEIGHT = 36
+
 interface RunDetailDrawerProps {
   /** null = closed. A run row = fetch and show that run's step timeline. */
   run: AgentRun | null
   onClose: () => void
+}
+
+/** A step's detail rendered as markdown, with collapse/expand for long agent
+ * summaries so the timeline stays scannable by default. Short details (e.g.
+ * "6/6 green") render inline with no toggle. */
+function StepDetail({ text }: { text: string }) {
+  const { token } = theme.useToken()
+  const [expanded, setExpanded] = useState(false)
+  const isLong =
+    text.length > DETAIL_COLLAPSE_MIN_CHARS ||
+    text.split('\n').length > DETAIL_COLLAPSE_MIN_LINES
+
+  if (!isLong) return <MarkdownLite text={text} />
+
+  return (
+    <div>
+      <div
+        style={{
+          maxHeight: expanded ? undefined : DETAIL_COLLAPSED_MAX_HEIGHT,
+          overflow: 'hidden',
+          position: 'relative',
+        }}
+      >
+        <MarkdownLite text={text} />
+        {!expanded && (
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: DETAIL_FADE_HEIGHT,
+              background: `linear-gradient(transparent, ${token.colorBgElevated})`,
+            }}
+          />
+        )}
+      </div>
+      <Button
+        type="link"
+        size="small"
+        style={{ padding: 0, height: 'auto' }}
+        onClick={() => {
+          setExpanded((v) => !v)
+        }}
+      >
+        {expanded ? 'Show less' : 'Show more'}
+      </Button>
+    </div>
+  )
 }
 
 /** Read-only drawer: GET /api/runs/{id} on open, rendered as a step timeline
@@ -123,7 +180,7 @@ function RunDetailDrawer({ run, onClose }: RunDetailDrawerProps) {
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {new Date(step.at).toLocaleString()}
                     </Text>
-                    {step.detail !== null && <MarkdownLite text={step.detail} />}
+                    {step.detail !== null && <StepDetail text={step.detail} />}
                   </>
                 ),
               }))}
