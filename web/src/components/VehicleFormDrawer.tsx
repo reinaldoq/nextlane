@@ -2,6 +2,13 @@ import { useEffect, useState } from 'react'
 import { App, Button, Drawer, Flex, Form, Input, InputNumber, Select } from 'antd'
 import { ApiError, api, type Vehicle } from '../lib/api'
 
+// keep in sync with api/_lib/vehicles.py's VIN_MIN_LEN / VIN_MAX_LEN
+const VIN_MIN_LEN = 5
+const VIN_MAX_LEN = 20
+// keep in sync with api/_lib/vehicles.py's MIN_VEHICLE_YEAR / MAX_VEHICLE_YEAR
+const MIN_VEHICLE_YEAR = 1950
+const MAX_VEHICLE_YEAR = 2100
+
 const STATUS_OPTIONS: { label: string; value: Vehicle['status'] }[] = [
   { label: 'Available', value: 'available' },
   { label: 'Reserved', value: 'reserved' },
@@ -138,7 +145,11 @@ function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawe
           name="vin"
           rules={[
             { required: true, message: 'VIN is required' },
-            { min: 5, max: 20, message: 'VIN must be 5-20 characters' },
+            {
+              min: VIN_MIN_LEN,
+              max: VIN_MAX_LEN,
+              message: `VIN must be ${VIN_MIN_LEN}-${VIN_MAX_LEN} characters`,
+            },
           ]}
         >
           <Input disabled={isEdit} placeholder="e.g. 1HGCM82633A004352" />
@@ -165,7 +176,12 @@ function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawe
           name="year"
           rules={[{ required: true, message: 'Year is required' }]}
         >
-          <InputNumber min={1950} max={2100} precision={0} style={{ width: '100%' }} />
+          <InputNumber
+            min={MIN_VEHICLE_YEAR}
+            max={MAX_VEHICLE_YEAR}
+            precision={0}
+            style={{ width: '100%' }}
+          />
         </Form.Item>
 
         <Form.Item

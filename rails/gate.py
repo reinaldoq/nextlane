@@ -32,6 +32,9 @@ from pathlib import Path
 
 _DEFAULT_TAIL_CHARS = 2000
 
+# run_gate's total_timeout_s default: ~30 minutes wall-clock across the whole gate.
+_DEFAULT_GATE_TIMEOUT_S = 1800
+
 # Per-step output-tail budget (chars), keyed by step name; steps not listed
 # use _DEFAULT_TAIL_CHARS. pytest gets a bigger tail so a failing assertion
 # plus its (short) traceback survives truncation into the retry prompt --
@@ -142,7 +145,7 @@ def run_gate(
     cwd: Path,
     *,
     steps: tuple[tuple[str, list[str]], ...] = DEFAULT_STEPS,
-    total_timeout_s: int = 1800,
+    total_timeout_s: int = _DEFAULT_GATE_TIMEOUT_S,
     env: dict[str, str] | None = None,
 ) -> GateResult:
     """Run `steps` in order (cwd=cwd), never stopping early on a failure.

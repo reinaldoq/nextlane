@@ -23,12 +23,30 @@ Status = Literal["available", "reserved", "sold"]
 SORT_COLUMNS = {"created_at", "price_cents", "year", "mileage_km"}
 SORT_DIRECTIONS = {"asc", "desc"}
 
+# Per-user rate limit applied to every write route below.
+WRITE_RATE_LIMIT = 100
+
+# GET /vehicles pagination bounds (Query(...) below).
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+
+# keep in sync with web/src/components/VehicleFormDrawer.tsx
+VIN_MIN_LEN = 5
+VIN_MAX_LEN = 20
+# keep in sync with web/src/components/VehicleFormDrawer.tsx
+MIN_VEHICLE_YEAR = 1950
+MAX_VEHICLE_YEAR = 2100
+
+# The vehicles.vin unique constraint name, matched against a UniqueViolation's
+# diag.constraint_name to distinguish "duplicate vin" from any other conflict.
+VIN_UNIQUE_CONSTRAINT = "vehicles_vin_key"
+
 
 class VehicleIn(BaseModel):
-    vin: str = Field(min_length=5, max_length=20)
+    vin: str = Field(min_length=VIN_MIN_LEN, max_length=VIN_MAX_LEN)
     make: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    year: int = Field(ge=1950, le=2100)
+    year: int = Field(ge=MIN_VEHICLE_YEAR, le=MAX_VEHICLE_YEAR)
     price_cents: int = Field(ge=0)
     mileage_km: int = Field(default=0, ge=0)
     status: Status = "available"
@@ -40,10 +58,10 @@ class VehiclePatch(BaseModel):
     # POST /vehicles/{id}/status where the transition matrix is enforced.
     model_config = ConfigDict(extra="forbid")
 
-    vin: str | None = Field(default=None, min_length=5, max_length=20)
+    vin: str | None = Field(default=None, min_length=VIN_MIN_LEN, max_length=VIN_MAX_LEN)
     make: str | None = Field(default=None, min_length=1)
     model: str | None = Field(default=None, min_length=1)
-    year: int | None = Field(default=None, ge=1950, le=2100)
+    year: int | None = Field(default=None, ge=MIN_VEHICLE_YEAR, le=MAX_VEHICLE_YEAR)
     price_cents: int | None = Field(default=None, ge=0)
     mileage_km: int | None = Field(default=None, ge=0)
 
@@ -85,7 +103,7 @@ def _raise_duplicate_vin(e: psycopg.errors.UniqueViolation, vin: str | None) -> 
 
     Always raises (never returns), so callers' `row` stays bound after the
     `except` branch."""
-    if e.diag.constraint_name != "vehicles_vin_key":
+    if e.diag.constraint_name != VIN_UNIQUE_CONSTRAINT:
         raise e
     raise api_error(
         409, "duplicate_vin", "a vehicle with this vin already exists", details={"vin": vin}
@@ -97,7 +115,7 @@ def list_vehicles(
     q: str | None = None,
     status: Status | None = None,
     sort: str = "created_at:desc",
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
 ):
     order_sql = _parse_sort(sort)
@@ -134,7 +152,9 @@ def list_vehicles(
 
 
 @router.post(
-    "/vehicles", status_code=201, dependencies=[Depends(rate_limited(100, scope="writes"))]
+    "/vehicles",
+    status_code=201,
+    dependencies=[Depends(rate_limited(WRITE_RATE_LIMIT, scope="writes"))],
 )
 def create_vehicle(body: VehicleIn):
     sql = (
@@ -226,7 +246,9 @@ def get_vehicle(vehicle_id: uuid.UUID):
     return row
 
 
-@router.patch("/vehicles/{vehicle_id}", dependencies=[Depends(rate_limited(100, scope="writes"))])
+@router.patch(
+    "/vehicles/{vehicle_id}", dependencies=[Depends(rate_limited(WRITE_RATE_LIMIT, scope="writes"))]
+)
 def patch_vehicle(vehicle_id: uuid.UUID, body: VehiclePatch):
     fields = body.model_dump(exclude_unset=True)
     if not fields:
@@ -249,7 +271,7 @@ def patch_vehicle(vehicle_id: uuid.UUID, body: VehiclePatch):
 @router.delete(
     "/vehicles/{vehicle_id}",
     status_code=204,
-    dependencies=[Depends(rate_limited(100, scope="writes"))],
+    dependencies=[Depends(rate_limited(WRITE_RATE_LIMIT, scope="writes"))],
 )
 def delete_vehicle(vehicle_id: uuid.UUID):
     with pool().connection() as conn:
@@ -261,7 +283,8 @@ def delete_vehicle(vehicle_id: uuid.UUID):
 
 
 @router.post(
-    "/vehicles/{vehicle_id}/status", dependencies=[Depends(rate_limited(100, scope="writes"))]
+    "/vehicles/{vehicle_id}/status",
+    dependencies=[Depends(rate_limited(WRITE_RATE_LIMIT, scope="writes"))],
 )
 def set_vehicle_status(vehicle_id: uuid.UUID, body: StatusIn):
     new_status = body.status

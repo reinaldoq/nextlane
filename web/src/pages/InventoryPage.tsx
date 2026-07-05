@@ -26,6 +26,8 @@ import {
   type SortState,
 } from '../hooks/useVehicleList'
 import type { Vehicle } from '../lib/api'
+import { DATE_LOCALE } from '../lib/format'
+import { PAGE_MAX_WIDTH } from '../lib/layout'
 
 const { Title, Text } = Typography
 
@@ -55,7 +57,7 @@ const currencyFormatter = new Intl.NumberFormat('de-DE', {
   currency: 'EUR',
 })
 const mileageFormatter = new Intl.NumberFormat('de-DE')
-const updatedFormatter = new Intl.DateTimeFormat('en-GB', {
+const updatedFormatter = new Intl.DateTimeFormat(DATE_LOCALE, {
   dateStyle: 'medium',
   timeStyle: 'short',
 })
@@ -245,7 +247,7 @@ function InventoryPage() {
   )
 
   return (
-    <Flex vertical gap={24} style={{ maxWidth: 1400, margin: '0 auto' }}>
+    <Flex vertical gap={24} style={{ maxWidth: PAGE_MAX_WIDTH, margin: '0 auto' }}>
       <Flex align="flex-start" justify="space-between" wrap="wrap" gap={16}>
         <Flex vertical gap={4}>
           <Title level={3} style={{ margin: 0 }}>

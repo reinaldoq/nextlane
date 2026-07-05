@@ -18,6 +18,14 @@ class RailsConfigError(Exception):
     """Configuration could not be loaded (bad env value, not a git repo, ...)."""
 
 
+# RAILS_MAX_BUDGET_USD default (a string since it's read/parsed straight from
+# the raw env value, same as the env var itself would be).
+_DEFAULT_MAX_BUDGET_USD = "2.0"
+
+# RAILS_ENGINE default when unset.
+_DEFAULT_ENGINE = "claude"
+
+
 # Base whitelist for agent-session child processes.
 _BASE_ENV_WHITELIST = (
     "PATH",
@@ -125,7 +133,7 @@ class RailsConfig:
         already-set env var always wins over the `.env` file's value."""
         repo_root = _repo_root()
         _load_dotenv_if_present(repo_root)
-        raw_budget = os.environ.get("RAILS_MAX_BUDGET_USD", "2.0")
+        raw_budget = os.environ.get("RAILS_MAX_BUDGET_USD", _DEFAULT_MAX_BUDGET_USD)
         try:
             max_budget_usd = float(raw_budget)
         except ValueError as exc:
@@ -133,7 +141,7 @@ class RailsConfig:
                 f"RAILS_MAX_BUDGET_USD must be a number, got '{raw_budget}'"
             ) from exc
         return cls(
-            engine=os.environ.get("RAILS_ENGINE", "claude"),
+            engine=os.environ.get("RAILS_ENGINE", _DEFAULT_ENGINE),
             max_budget_usd=max_budget_usd,
             repo_root=repo_root,
         )

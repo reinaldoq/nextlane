@@ -203,6 +203,14 @@ _MAX_PHASE1_REPRO_ATTEMPTS = 2
 # summary doesn't clutter the default view.
 _MC_DETAIL_MAX_CHARS = 8000
 
+# The retro session's timeout is capped at this many seconds regardless of how
+# much whole-run budget remains (see `_run_retro`).
+_RETRO_SESSION_MAX_TIMEOUT_S = 300
+
+# run_agent_task's max_retries default: one initial builder session plus up to
+# this many gate-driven retries.
+_DEFAULT_MAX_RETRIES = 2
+
 # Derived from docs/superpowers/agents-md-seed.md's conventions (Task 7
 # formalizes these into AGENTS.md proper; this is the concise inline version
 # the cross-vendor reviewer checks a diff against in the meantime).
@@ -593,7 +601,7 @@ def run_agent_task(
     title: str,
     engine: str | None = None,
     reviewer_engine: str | None = None,
-    max_retries: int = 2,
+    max_retries: int = _DEFAULT_MAX_RETRIES,
     open_pr: bool = True,
     retro: bool = True,
     enforce_repro: bool = False,
@@ -803,7 +811,7 @@ def run_agent_task(
                     run_id, next(mc_seq), "retro", "failed", "skipped: no run budget remaining"
                 )
                 return []
-            timeout_s = max(1, min(300, int(remaining)))
+            timeout_s = max(1, min(_RETRO_SESSION_MAX_TIMEOUT_S, int(remaining)))
             # A FRESH readonly adapter for the builder's engine -- distinct
             # from `builder` (constructed readonly=False) even though it may
             # be the very same underlying CLI, mirroring how the reviewer is

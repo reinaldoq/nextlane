@@ -16,12 +16,17 @@ Kind = Literal["bug_report", "client_error"]
 
 MAX_CONTEXT_BYTES = 16_384
 
+EVENTS_RATE_LIMIT = 30
+
+# keep in sync with web/src/components/ReportIssueModal.tsx's MESSAGE_MAX_CHARS
+MAX_MESSAGE_CHARS = 4000
+
 
 class EventIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Kind
-    message: str = Field(min_length=1, max_length=4000)
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     context: dict = Field(default_factory=dict)
 
     @field_validator("context")
@@ -37,7 +42,11 @@ class EventIn(BaseModel):
 
 # No GET endpoint here (YAGNI) -- the Phase 2 triage agent reads app_events
 # directly from the DB, so there's no reader to build a list/detail API for yet.
-@router.post("/events", status_code=201, dependencies=[Depends(rate_limited(30, scope="events"))])
+@router.post(
+    "/events",
+    status_code=201,
+    dependencies=[Depends(rate_limited(EVENTS_RATE_LIMIT, scope="events"))],
+)
 def create_event(body: EventIn):
     sql = "INSERT INTO app_events (kind, message, context) VALUES (%s, %s, %s) RETURNING *"
     with pool().connection() as conn:

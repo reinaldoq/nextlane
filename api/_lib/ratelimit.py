@@ -18,13 +18,17 @@ from .errors import api_error
 _buckets: dict[str, deque[float]] = defaultdict(deque)
 _lock = threading.Lock()
 
+DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60.0
+
 
 def reset() -> None:
     with _lock:
         _buckets.clear()
 
 
-def allow(key: str, limit: int, window: float = 60.0) -> tuple[bool, int]:
+def allow(
+    key: str, limit: int, window: float = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+) -> tuple[bool, int]:
     """Returns (ok, retry_after): retry_after is the whole seconds until the
     oldest request ages out of the window (0 when allowed)."""
     now = time.monotonic()

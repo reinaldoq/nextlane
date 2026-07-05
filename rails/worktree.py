@@ -47,6 +47,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Where task worktrees live, relative to repo_root.
+_WORKTREES_DIR = ".worktrees"
+
 
 @dataclass(frozen=True)
 class Worktree:
@@ -77,7 +80,7 @@ def create(
     """
     dir_name = f"{task_slug}-{_short_id()}"
     branch = f"rails/{dir_name}"
-    path = repo_root / ".worktrees" / dir_name
+    path = repo_root / _WORKTREES_DIR / dir_name
 
     subprocess.run(
         ["git", "-C", str(repo_root), "worktree", "add", str(path), "-b", branch, base_ref],

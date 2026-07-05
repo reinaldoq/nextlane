@@ -31,6 +31,9 @@ from typing import Callable
 
 _Opener = Callable[[urllib.request.Request], object]
 
+_DEFAULT_EVENT_FETCH_LIMIT = 10
+_APP_EVENTS_PATH = "/rest/v1/app_events"
+
 
 class EventsError(RuntimeError):
     """Raised when required Supabase configuration is missing."""
@@ -81,7 +84,7 @@ def _row_to_event(row: dict) -> AppEvent:
 
 
 def fetch_new_events(
-    *, limit: int = 10, opener: _Opener = urllib.request.urlopen
+    *, limit: int = _DEFAULT_EVENT_FETCH_LIMIT, opener: _Opener = urllib.request.urlopen
 ) -> list[AppEvent]:
     """GET the `limit` most recent `status=new` app_events, newest first.
 
@@ -90,7 +93,7 @@ def fetch_new_events(
     urlopen`) -- it receives the built `Request` and must return a context
     manager whose `.read()` gives the response body bytes.
     """
-    url = f"{_base_url()}/rest/v1/app_events?status=eq.new&order=created_at.desc&limit={limit}"
+    url = f"{_base_url()}{_APP_EVENTS_PATH}?status=eq.new&order=created_at.desc&limit={limit}"
     request = urllib.request.Request(url, headers=_headers(), method="GET")
     with opener(request) as response:
         body = response.read()
@@ -102,7 +105,7 @@ def mark_event(event_id: str, status: str, *, opener: _Opener = urllib.request.u
     """PATCH `app_events` row `event_id` to `status` (`Prefer: return=minimal`
     -- we don't need the updated row back, just confirmation the write
     landed). Same env/injection contract as `fetch_new_events`."""
-    url = f"{_base_url()}/rest/v1/app_events?id=eq.{event_id}"
+    url = f"{_base_url()}{_APP_EVENTS_PATH}?id=eq.{event_id}"
     headers = _headers()
     headers["Content-Type"] = "application/json"
     headers["Prefer"] = "return=minimal"

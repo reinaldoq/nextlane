@@ -24,9 +24,12 @@ from .errors import api_error
 # screen (see `require_operator`/`OPERATOR_EMAILS`). Non-operators get 403.
 router = APIRouter(dependencies=[Depends(require_operator)])
 
+RUNS_DEFAULT_LIMIT = 50
+RUNS_MAX_LIMIT = 200
+
 
 @router.get("/runs")
-def list_runs(limit: int = Query(default=50, ge=1, le=200)):
+def list_runs(limit: int = Query(default=RUNS_DEFAULT_LIMIT, ge=1, le=RUNS_MAX_LIMIT)):
     """Most recent `limit` agent_runs, newest first (ts_iso desc, id desc
     tiebreaker for stability). `total` is the full table count, not just
     this page -- there is no offset/pagination here (Mission Control shows

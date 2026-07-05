@@ -47,6 +47,12 @@ from typing import IO, Protocol
 
 from rails.config import RailsConfig
 
+# AgentSession.run/_SubprocessAdapter.run's timeout_s default: ~30 minutes.
+_DEFAULT_SESSION_TIMEOUT_S = 1800
+
+# Per-worktree directory adapter sessions write their raw transcripts under.
+_TRANSCRIPT_DIR_NAME = ".rails-transcripts"
+
 
 @dataclass
 class SessionResult:
@@ -107,7 +113,7 @@ class AgentSession(Protocol):
         prompt: str,
         *,
         cwd: Path,
-        timeout_s: int = 1800,
+        timeout_s: int = _DEFAULT_SESSION_TIMEOUT_S,
         extra_env: dict[str, str] | None = None,
     ) -> SessionResult: ...
 
@@ -174,11 +180,11 @@ class _SubprocessAdapter:
         prompt: str,
         *,
         cwd: Path,
-        timeout_s: int = 1800,
+        timeout_s: int = _DEFAULT_SESSION_TIMEOUT_S,
         extra_env: dict[str, str] | None = None,
     ) -> SessionResult:
         cwd = Path(cwd)
-        transcript_dir = cwd / ".rails-transcripts"
+        transcript_dir = cwd / _TRANSCRIPT_DIR_NAME
         transcript_dir.mkdir(parents=True, exist_ok=True)
         stem = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%f')}-{self.name}"
         transcript_path = transcript_dir / f"{stem}.jsonl"
