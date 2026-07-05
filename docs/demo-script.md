@@ -2,7 +2,7 @@
 
 Run-of-show for the interview panel session: the panel hands us a fresh,
 unseen task and we build it live with the rails, on top of a repo where the
-rails have already shipped four real cross-vendor runs to production. This
+rails have already shipped five real cross-vendor runs to production. This
 doc is the presenter's cheat sheet — preflight, timings, exact commands,
 fallbacks, and the talking points that turn "it ran" into "here's why it's
 trustworthy."
@@ -56,14 +56,17 @@ asking for):
 
 Also confirm, once, before going live: the deployed app loads and you can
 log in (see step (a) below — this is also step 1 of the actual demo, so
-doing it in preflight doubles as a rehearsal).
+doing it in preflight doubles as a rehearsal). **Log in with an operator
+account** (the demo `reviewer@nextlane-demo.dev` is on `OPERATOR_EMAILS`): a
+"Nextlane staff" badge appears and Mission Control is visible. A non-operator
+(dealer) login sees neither — the demo's visual anchor would be invisible.
 
 ## Narrative arc
 
 Total budget: ~20-25 minutes end-to-end, built around **two** real agent
 runs (one prepared, one from the panel) at 3-8 minutes of actual session
-time each — that's what the four already-merged runs actually took
-(PR#18: 255s / PR#19: 463s / PR#23: 206s / PR#26: 273s, per
+time each — that's what the five already-merged runs actually took
+(PR#18: 255s / PR#19: 463s / PR#23: 206s / PR#26: 273s / PR#39: 261s, per
 `rails/journal/runs.jsonl`). Everything else is narration over dead air,
 watching Mission Control fill in, or fast to click through.
 
@@ -71,7 +74,7 @@ watching Mission Control fill in, or fast to click through.
 | --- | --- | --- | --- |
 | 0:00-0:30 | **(a) The deployed app** | Open https://nextlane-blond.vercel.app, log in | "This is a real DMS slice — vehicle inventory, Postgres-backed, RLS-enforced — deployed on Vercel. Everything you'll see get built in the next 20 minutes ships to this exact URL." |
 | 0:30-2:30 | **(b) The four artifacts** | Open, in order: `AGENTS.md` (agent rules), `.claude/skills/scaffold-module` + `.claude/skills/domain-reviewer` (skills), `rails/agents/` + `uv run rails --help` (the day-2 agents), `.github/workflows/ci.yml` + branch protection settings (the gate/CI) | "Four graded artifacts: the rules every engine reads before touching code, two reusable skills, the day-2 agents themselves — one Typer CLI, one shared loop — and the deterministic gate + CI that nothing reaches `main` without passing." |
-| 2:30-3:30 | **(c) Proof it already ran** | Open **Mission Control** (`/mission-control`) — four runs with engine badges + verdict chips; click one to show its step timeline. Optionally `cat rails/journal/runs.jsonl \| jq .` for the raw evidence. | "Four real cross-vendor runs, already merged, already live: #18 Claude built a stats endpoint, Codex reviewed; #19 Codex built a UI feature + e2e, Claude reviewed; #23 a dealer-filed bug went through `rails triage` end to end; #26 Claude built the CSV export you'll also see. This dashboard is *inside the product* — the agents' work, shown in the product they're building. Nothing here is staged." |
+| 2:30-3:30 | **(c) Proof it already ran** | Open **Mission Control** (`/mission-control`) — five runs with engine badges + verdict chips; click one to show its step timeline. Optionally `cat rails/journal/runs.jsonl \| jq .` for the raw evidence. | "Five real cross-vendor runs, already merged, already live: #18 Claude built a stats endpoint, Codex reviewed; #19 Codex built a UI feature + e2e, Claude reviewed; #23 a dealer-filed bug went through `rails triage` end to end; #26 Claude built the CSV export; #39 Claude added the inventory total-value aggregate. This dashboard is *inside the product* — the agents' work, shown in the product they're building. Nothing here is staged." |
 | 3:30-10:00 | **(d) One prepared day-2 task, live** | See "Prepared task" below. Run it; **switch to the Mission Control tab and watch the `running` row + step timeline appear live** while you narrate the phase banners; `tail -f` the transcript during dead air; land on the gate + review + proposed lesson + PR. | See narration script below. |
 | 10:00-11:00 | **Merge → auto-deploy** | `gh pr checks --watch`, squash-merge, then reload the prod URL to show the new behavior live | "Merge to `main`, Vercel's git integration takes it from here — no manual deploy step. Refreshing prod now." |
 | 11:00-20:00+ | **(f) The panel's fresh task** | Same command shape, a spec nobody has seen before | "Same command, unseen spec — this is the same loop you just watched, not a rehearsed one." |
@@ -80,16 +83,17 @@ watching Mission Control fill in, or fast to click through.
 
 Pick something small and safely scoped ahead of time (shape it like PR#18/
 #19: one endpoint or one UI affordance on the `vehicles` module, not a new
-module). **Note: `GET /api/vehicles/export.csv` is already built (PR#26) —
-don't reuse it.** A good default to have ready: **"Add a `total_value_cents`
-field to `GET /api/vehicles/stats`"** — small, extends the existing stats
-endpoint's single-query aggregation, backend + one test, low risk of
-colliding with the panel's later ask.
+module). **First, `uv run rails runs` and skim `api/_lib/vehicles.py` to pick
+something genuinely UNbuilt** — a task that already exists makes the agent
+no-op live. Already built, so don't reuse: `/api/vehicles/stats` and its
+`total_value_cents` field (#18/#39), `GET /api/vehicles/export.csv` (#26),
+the "Clear filters" toolbar (#19). A good fresh default:
 
 ```bash
 uv run rails build-feature \
-  "Add a total_value_cents field to GET /api/vehicles/stats that sums \
-   price_cents across all vehicles, in the same single aggregate query" \
+  "Add year_min and year_max query params to GET /api/vehicles that filter \
+   the list to vehicles within that inclusive year range, following the \
+   existing q/status filter + sort-whitelist pattern, with an API test" \
   --engine claude --reviewer codex
 ```
 
@@ -191,8 +195,8 @@ touches.
 | A live session is running long | `--no-pr` stops the loop short of opening a PR, leaving the worktree + branch under `.worktrees/` for inspection — narrate what's there instead of waiting it out. |
 | The gate goes red | The loop retries with the failing steps fed back into the next prompt (bounded retries, full per-step output — not just the first failure). Narrate the retry banner live; it's the same resilience story either way. |
 | Unsure which engine to run live | Default to `claude`: it has the hard `--max-budget-usd` cap (bounded spend, not just bounded time) and has been the fastest engine in the journal so far. |
-| Docker/Postgres won't come up | The deployed app + `rails/journal/runs.jsonl` are enough to demo the whole story without a single local command — the live URL already reflects three real merged runs. |
-| A live run misbehaves or the network flakes | Fall back to `rails/journal/runs.jsonl` and the three merged PRs (#18, #19, #23) as static, already-verified proof — every field (engine, reviewer, verdict, cost, PR URL) is right there, no live run required to make the point. |
+| Docker/Postgres won't come up | The deployed app + `rails/journal/runs.jsonl` are enough to demo the whole story without a single local command — the live URL already reflects five real merged runs. |
+| A live run misbehaves or the network flakes | Fall back to `rails/journal/runs.jsonl` and the five merged PRs (#18, #19, #23, #26, #39) as static, already-verified proof — every field (engine, reviewer, verdict, cost, PR URL) is right there, no live run required to make the point. |
 | Something looks wrong in the diff mid-review | That's the review step doing its job — narrate it as evidence the cross-vendor review is real, not theater: a verdict that doesn't parse fails safe to `REQUEST_CHANGES`, and a genuine `REQUEST_CHANGES` is a legitimate, tell-able outcome. |
 
 ## Talking points
