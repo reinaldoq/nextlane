@@ -13,9 +13,8 @@ import {
   theme,
 } from 'antd'
 import type { TableColumnsType, TableProps } from 'antd'
-import DeleteVehicleButton from '../components/DeleteVehicleButton'
+import RowActions from '../components/RowActions'
 import StatCards from '../components/StatCards'
-import StatusActions from '../components/StatusActions'
 import VehicleFormDrawer from '../components/VehicleFormDrawer'
 import {
   DEFAULT_PAGE_SIZE,
@@ -90,7 +89,7 @@ function InventoryPage() {
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  // Stable identity: passed down to StatusActions/VehicleFormDrawer, and used as
+  // Stable identity: passed down to RowActions/VehicleFormDrawer, and used as
   // a memoized columns dependency below.
   const refresh = useCallback(() => {
     setRefreshKey((key) => key + 1)
@@ -235,20 +234,10 @@ function InventoryPage() {
         title: 'Actions',
         key: 'actions',
         fixed: 'right',
-        width: 330,
+        width: 96,
+        align: 'center',
         render: (_value: unknown, vehicle: Vehicle) => (
-          <Flex align="center" gap={8}>
-            <Button
-              size="small"
-              onClick={() => {
-                openEditDrawer(vehicle)
-              }}
-            >
-              Edit
-            </Button>
-            <StatusActions vehicle={vehicle} refresh={refresh} />
-            <DeleteVehicleButton vehicle={vehicle} refresh={refresh} />
-          </Flex>
+          <RowActions vehicle={vehicle} onEdit={openEditDrawer} refresh={refresh} />
         ),
       },
     ],

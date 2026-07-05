@@ -74,8 +74,11 @@ test('inventory golden path: create, search, transition, delete', async ({ page 
     await expect(page.getByRole('row', { name: new RegExp(vin) })).toHaveCount(1)
   })
 
+  // Row actions live behind a per-row "⋯" overflow menu (aria-label
+  // "Row actions"); status changes + delete confirm through a dialog.
   await test.step('reserve the vehicle', async () => {
-    await row.getByRole('button', { name: 'Reserve' }).click()
+    await row.getByRole('button', { name: 'Row actions' }).click()
+    await page.getByRole('menuitem', { name: 'Reserve', exact: true }).click()
     await page.getByRole('button', { name: 'Confirm' }).click()
 
     await expect(page.getByText('Vehicle reserved.')).toBeVisible()
@@ -83,21 +86,23 @@ test('inventory golden path: create, search, transition, delete', async ({ page 
   })
 
   await test.step('mark the vehicle sold', async () => {
-    await row.getByRole('button', { name: 'Mark sold' }).click()
+    await row.getByRole('button', { name: 'Row actions' }).click()
+    await page.getByRole('menuitem', { name: 'Mark sold', exact: true }).click()
     await page.getByRole('button', { name: 'Confirm' }).click()
 
     await expect(page.getByText('Vehicle marked as sold.')).toBeVisible()
     await expect(row.getByText('Sold', { exact: true })).toBeVisible()
-
-    // Sold is terminal: no transition actions left, just the "—" placeholder.
-    await expect(row.getByRole('button', { name: 'Reserve' })).toHaveCount(0)
-    await expect(row.getByRole('button', { name: 'Mark sold' })).toHaveCount(0)
-    await expect(row.getByRole('button', { name: 'Cancel reservation' })).toHaveCount(0)
-    await expect(row.getByText('—', { exact: true })).toBeVisible()
   })
 
   await test.step('delete the vehicle', async () => {
-    await row.getByRole('button', { name: 'Delete' }).click()
+    await row.getByRole('button', { name: 'Row actions' }).click()
+
+    // Sold is terminal: the menu offers no status transitions, only Edit + Delete.
+    await expect(page.getByRole('menuitem', { name: 'Reserve', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('menuitem', { name: 'Mark sold', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('menuitem', { name: 'Cancel reservation' })).toHaveCount(0)
+
+    await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
     await page.getByRole('button', { name: 'Confirm' }).click()
 
     await expect(page.getByText('Vehicle deleted.')).toBeVisible()

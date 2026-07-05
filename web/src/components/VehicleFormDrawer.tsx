@@ -46,7 +46,7 @@ function diffPatch(
 }
 
 /** Create/edit drawer for a vehicle. Status is only settable at create time --
- * transitions after that go through StatusActions, which enforces the server's matrix. */
+ * transitions after that go through RowActions, which enforces the server's matrix. */
 function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawerProps) {
   const { message } = App.useApp()
   const [form] = Form.useForm<VehicleFormValues>()

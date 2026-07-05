@@ -16,11 +16,13 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 
-from .auth import current_user
+from .auth import require_operator
 from .db import pool
 from .errors import api_error
 
-router = APIRouter(dependencies=[Depends(current_user)])
+# Operator-only: Mission Control is an internal ops console, not a dealer
+# screen (see `require_operator`/`OPERATOR_EMAILS`). Non-operators get 403.
+router = APIRouter(dependencies=[Depends(require_operator)])
 
 
 @router.get("/runs")

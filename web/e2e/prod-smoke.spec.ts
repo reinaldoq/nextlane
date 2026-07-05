@@ -89,8 +89,11 @@ test.describe('production smoke', () => {
       await expect(row.getByText('Available', { exact: true })).toBeVisible()
     })
 
+    // Row actions live behind a per-row "⋯" overflow menu (aria-label
+    // "Row actions"); status changes + delete confirm through a dialog.
     await test.step('reserve the vehicle', async () => {
-      await row.getByRole('button', { name: 'Reserve' }).click()
+      await row.getByRole('button', { name: 'Row actions' }).click()
+      await page.getByRole('menuitem', { name: 'Reserve', exact: true }).click()
       await page.getByRole('button', { name: 'Confirm' }).click()
 
       await expect(page.getByText('Vehicle reserved.')).toBeVisible()
@@ -98,7 +101,8 @@ test.describe('production smoke', () => {
     })
 
     await test.step('mark the vehicle sold', async () => {
-      await row.getByRole('button', { name: 'Mark sold' }).click()
+      await row.getByRole('button', { name: 'Row actions' }).click()
+      await page.getByRole('menuitem', { name: 'Mark sold', exact: true }).click()
       await page.getByRole('button', { name: 'Confirm' }).click()
 
       await expect(page.getByText('Vehicle marked as sold.')).toBeVisible()
@@ -106,7 +110,8 @@ test.describe('production smoke', () => {
     })
 
     await test.step('delete the vehicle', async () => {
-      await row.getByRole('button', { name: 'Delete' }).click()
+      await row.getByRole('button', { name: 'Row actions' }).click()
+      await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
       await page.getByRole('button', { name: 'Confirm' }).click()
 
       await expect(page.getByText('Vehicle deleted.')).toBeVisible()
