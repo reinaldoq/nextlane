@@ -149,15 +149,3 @@ Run `uv run rails engines` to see which are actually on `PATH` for you.
 Before a live session, `uv run rails doctor` runs a preflight instead: local
 Postgres reachable, each engine on `PATH`, `gh auth status`, `.env` keys,
 and migrations applied — see [`docs/demo-script.md`](docs/demo-script.md).
-
-### Deliberately deferred / roadmap
-
-Named here so a silent omission reads as a decision, not an oversight:
-
-- **Mission Control** — shipped (see above): a live in-app run dashboard at
-  `/mission-control`, the one sanctioned post-Phase-1-freeze app addition.
-- **Langfuse** — declined as a redundant third trace sink on top of the
-  committed journal + the per-session local transcripts already on disk.
-- **`rails eval`** (an agentic golden-task harness) — the deterministic
-  gate plus independent cross-vendor AI review already cover verification
-  today; a golden-task harness is future work, not a current gap.
