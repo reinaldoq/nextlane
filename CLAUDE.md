@@ -1,8 +1,10 @@
 # CLAUDE.md
 
 Read `AGENTS.md` first — it is the canonical source of truth for this repo's
-conventions, module pattern, gate, and agent rules. Everything below is
-Claude-specific on top of it.
+conventions, gate, and agent rules, and it points to nested area guides
+(`api/AGENTS.md`, `web/AGENTS.md`, `supabase/AGENTS.md`, `rails/AGENTS.md`) —
+read the one for the code you're changing. Everything below is Claude-specific
+on top of it.
 
 - Reusable skills live in `.claude/skills/`: `scaffold-module` (generate a
   new DMS module end-to-end) and `domain-reviewer` (review a diff against
