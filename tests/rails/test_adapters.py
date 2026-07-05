@@ -84,6 +84,13 @@ def test_build_argv_exact():
         "acceptEdits",
         "--max-budget-usd",
         "1.5",
+        # builder sessions get the read-only context7 docs MCP (relative path
+        # resolves against the worktree Popen cwd)
+        "--mcp-config",
+        "rails/context7.mcp.json",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "mcp__context7",
     ]
 
 
@@ -726,6 +733,29 @@ def test_claude_write_build_argv_uses_acceptedits_not_plan():
 
     assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
     assert "plan" not in argv
+
+
+def test_claude_builder_wires_context7_docs_mcp():
+    # Builder sessions get the read-only context7 docs MCP, pre-approved and
+    # strict (only this server), so they look up current library APIs.
+    adapter = ClaudeAdapter(make_config(), binary=["claude"], readonly=False)
+
+    argv = adapter.build_argv("build this", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert "--strict-mcp-config" in argv
+    assert argv[argv.index("--mcp-config") + 1].endswith("rails/context7.mcp.json")
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__context7"
+
+
+def test_claude_readonly_reviewer_has_no_mcp():
+    # The read-only reviewer judges a diff, not docs -- it stays minimal, no MCP.
+    adapter = ClaudeAdapter(make_config(), binary=["claude"], readonly=True)
+
+    argv = adapter.build_argv("review this", cwd=ARGV_CWD, out_file=ARGV_OUT)
+
+    assert "--mcp-config" not in argv
+    assert "--strict-mcp-config" not in argv
+    assert "mcp__context7" not in argv
 
 
 def test_codex_readonly_build_argv_uses_read_only_sandbox():
