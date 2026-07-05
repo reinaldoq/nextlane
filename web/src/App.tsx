@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import { Navigate, NavLink, Outlet, Route, Routes, useOutletContext } from 'react-router-dom'
-import { Button, Flex, Layout, Spin, Typography, theme } from 'antd'
+import { Button, Flex, Layout, Spin, Tag, Tooltip, Typography, theme } from 'antd'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import { api } from './lib/api'
@@ -170,6 +170,13 @@ function AppFrame({ email }: { email: string }) {
           </Flex>
           <Flex align="center" gap={16}>
             <ReportIssueModal />
+            {isOperator === true && (
+              <Tooltip title="Internal Nextlane staff — you can see operator tools like Mission Control that dealers can't.">
+                <Tag color={token.colorPrimary} style={{ margin: 0 }}>
+                  Nextlane staff
+                </Tag>
+              </Tooltip>
+            )}
             <Text style={{ color: token.colorTextLightSolid, opacity: 0.85 }}>{email}</Text>
             <Button onClick={handleLogout}>Log out</Button>
           </Flex>
