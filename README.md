@@ -118,18 +118,23 @@ They land in the PR's "Proposed LEARNINGS" section and in the journal
 (`proposed_learnings`) purely as a suggestion; a human decides whether to
 fold one into `rails/LEARNINGS.md` when merging. `--no-retro` skips it.
 
-**Proof it's real:** three cross-vendor dogfood runs have merged through this
+**Proof it's real:** five cross-vendor dogfood runs have merged through this
 exact loop —
 [#18](https://github.com/reinaldoq/nextlane/pull/18) (Claude built a
 `GET /api/vehicles/stats` endpoint + updated web StatCards to one request;
 Codex reviewed → `APPROVE`),
 [#19](https://github.com/reinaldoq/nextlane/pull/19) (Codex built a "Clear
-filters" toolbar button + Playwright e2e; Claude reviewed → `APPROVE`), and
+filters" toolbar button + Playwright e2e; Claude reviewed → `APPROVE`),
 [#23](https://github.com/reinaldoq/nextlane/pull/23) (Claude triaged and
-fixed a reported inventory-integration bug; Codex reviewed → `APPROVE`), all
-real headless sessions on subscription CLIs with no API keys — see their
-entries (engine, reviewer, verdict, cost) in `rails/journal/runs.jsonl`, or
-run `uv run rails runs` for a pretty-printed table of the same data.
+fixed a reported inventory-integration bug; Codex reviewed → `APPROVE`),
+[#26](https://github.com/reinaldoq/nextlane/pull/26) (Claude built a
+`GET /api/vehicles/export.csv` endpoint; Codex reviewed → `APPROVE`), and
+[#39](https://github.com/reinaldoq/nextlane/pull/39) (Claude added a
+`total_value_cents` aggregate to the stats endpoint; Codex reviewed →
+`APPROVE`), all real headless sessions on subscription CLIs with no API keys
+— see their entries (engine, reviewer, verdict, cost) in
+`rails/journal/runs.jsonl`, or run `uv run rails runs` for a pretty-printed
+table of the same data.
 
 **Mission Control:** a live in-app dashboard of these runs at
 [`/mission-control`](https://nextlane-blond.vercel.app/mission-control)
@@ -137,13 +142,23 @@ inside the DMS itself — engine badges, status/verdict chips, cost, PR links,
 and a per-run step timeline, polling `GET /api/runs`/`GET /api/runs/{id}`
 every few seconds (deliberately polling, not Realtime — the API is the read
 path like every other table; the rails runner writes to it directly via
-`rails/mission_control.py`).
+`rails/mission_control.py`). It's an internal **operator-only** view: the nav
+link, the route, and `GET /api/runs*` are gated on `GET /api/me`'s
+`is_operator` (the `OPERATOR_EMAILS` allowlist), so ordinary dealers don't see
+the ops console — only "Nextlane staff" do.
 
 | engine | notes |
 | --- | --- |
 | `claude` | hard `--max-budget-usd` cap; per-session USD cost reported |
 | `codex` | no dollar-budget flag (token counts only); bounded by timeout + sandbox mode |
 | `gemini` | best-effort support; no dollar-budget flag either |
+
+Because only `claude` emits a dollar figure, Mission Control's **Cost** column
+sums just the Claude sessions in a run — it's an honest *floor*, not a total.
+A codex- or gemini-built run therefore shows only its Claude portion (e.g.
+#19's cost is the Claude *reviewer* alone; the Codex build isn't priced by its
+CLI). A token-based estimate for the other two engines is deliberately
+deferred over reporting a fabricated number.
 
 Run `uv run rails engines` to see which are actually on `PATH` for you.
 Before a live session, `uv run rails doctor` runs a preflight instead: local
