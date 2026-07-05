@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Alert, Descriptions, Drawer, Empty, Spin, Tag, Timeline, Typography, theme } from 'antd'
+import { Alert, Button, Descriptions, Drawer, Empty, Spin, Tag, Timeline, Typography, theme } from 'antd'
 import { ApiError, api, type AgentRun, type RunDetail, type RunStepStatus } from '../lib/api'
 import { formatCostUsd } from '../lib/format'
 import MarkdownLite from './MarkdownLite'
@@ -11,6 +11,48 @@ interface RunDetailDrawerProps {
   /** null = closed. A run row = fetch and show that run's step timeline. */
   run: AgentRun | null
   onClose: () => void
+}
+
+/** A step's detail rendered as markdown, with collapse/expand for long agent
+ * summaries so the timeline stays scannable by default. Short details (e.g.
+ * "6/6 green") render inline with no toggle. */
+function StepDetail({ text }: { text: string }) {
+  const { token } = theme.useToken()
+  const [expanded, setExpanded] = useState(false)
+  const isLong = text.length > 240 || text.split('\n').length > 5
+
+  if (!isLong) return <MarkdownLite text={text} />
+
+  return (
+    <div>
+      <div style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden', position: 'relative' }}>
+        <MarkdownLite text={text} />
+        {!expanded && (
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 36,
+              background: `linear-gradient(transparent, ${token.colorBgElevated})`,
+            }}
+          />
+        )}
+      </div>
+      <Button
+        type="link"
+        size="small"
+        style={{ padding: 0, height: 'auto' }}
+        onClick={() => {
+          setExpanded((v) => !v)
+        }}
+      >
+        {expanded ? 'Show less' : 'Show more'}
+      </Button>
+    </div>
+  )
 }
 
 /** Read-only drawer: GET /api/runs/{id} on open, rendered as a step timeline
@@ -123,7 +165,7 @@ function RunDetailDrawer({ run, onClose }: RunDetailDrawerProps) {
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {new Date(step.at).toLocaleString()}
                     </Text>
-                    {step.detail !== null && <MarkdownLite text={step.detail} />}
+                    {step.detail !== null && <StepDetail text={step.detail} />}
                   </>
                 ),
               }))}
