@@ -43,6 +43,9 @@ def jwks_server(ec_key):
     url = f"http://127.0.0.1:{srv.server_port}/jwks.json"
     os.environ["SUPABASE_JWKS_URL"] = url
     os.environ["SUPABASE_JWT_ISSUER"] = "https://test.issuer/auth/v1"
+    # Default `make_token` email is an operator so existing Mission Control /
+    # runs-api tests stay green; non-operator tests forge a different email.
+    os.environ["OPERATOR_EMAILS"] = "reviewer@test.dev"
     yield url
     srv.shutdown()
 

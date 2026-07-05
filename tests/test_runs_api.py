@@ -242,3 +242,21 @@ def test_get_unknown_uuid_returns_404(db_client: TestClient, auth_headers: dict)
 def test_get_malformed_uuid_returns_422(db_client: TestClient, auth_headers: dict):
     r = db_client.get("/api/runs/not-a-uuid", headers=auth_headers)
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Operator gating: Mission Control is an internal ops console, so a valid but
+# non-operator (dealer) token is authenticated yet forbidden -- 403, not 401.
+# `auth_headers`'s default email (reviewer@test.dev) IS on OPERATOR_EMAILS
+# (see conftest), which is why every 200 test above already proves the
+# operator path.
+# ---------------------------------------------------------------------------
+
+
+def test_runs_forbidden_for_authenticated_non_operator(db_client: TestClient, make_token):
+    run_id = insert_run()
+    dealer = {"Authorization": f"Bearer {make_token(email='dealer@test.dev')}"}
+    for path in ("/api/runs", f"/api/runs/{run_id}"):
+        r = db_client.get(path, headers=dealer)
+        assert r.status_code == 403, f"{path} -> {r.status_code}"
+        assert r.json()["code"] == "forbidden"

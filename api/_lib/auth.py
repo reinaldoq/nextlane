@@ -6,6 +6,13 @@ from .errors import api_error
 from .settings import env
 
 _bearer = HTTPBearer(auto_error=False)
+
+# Mission Control is an INTERNAL operator/ops console (agent runs, USD cost, PR
+# links), not a dealer-facing screen -- so its routes are gated to an operator
+# allowlist rather than every authenticated dealer. `OPERATOR_EMAILS` is a
+# comma-separated env allowlist; empty/unset means "no operators" (deny by
+# default). The web mirrors this by only showing the Mission Control nav/route
+# to operators (see `GET /api/me`).
 _jwk_clients: dict[str, jwt.PyJWKClient] = {}
 
 _UNAUTHENTICATED_HEADERS = {"WWW-Authenticate": "Bearer"}
@@ -46,3 +53,23 @@ def current_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) 
             f"invalid token: {type(e).__name__}",
             headers=_UNAUTHENTICATED_HEADERS,
         ) from e
+
+
+def _operator_emails() -> set[str]:
+    """The operator allowlist from `OPERATOR_EMAILS` (comma-separated,
+    case-insensitive). Unset/empty => empty set => nobody is an operator."""
+    return {part.strip().lower() for part in env("OPERATOR_EMAILS", "").split(",") if part.strip()}
+
+
+def is_operator(user: dict) -> bool:
+    """Whether the authenticated user's email is on the operator allowlist."""
+    return (user.get("email") or "").strip().lower() in _operator_emails()
+
+
+def require_operator(user: dict = Depends(current_user)) -> dict:
+    """Like `current_user`, but 403s unless the user is an operator. Gates the
+    internal Mission Control routes so ordinary dealers can't read agent-run
+    ops data (cost, PR links, internal tooling)."""
+    if not is_operator(user):
+        raise api_error(403, "forbidden", "operator access required")
+    return user

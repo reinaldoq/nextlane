@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Navigate, NavLink, Outlet, Route, Routes } from 'react-router-dom'
+import { useEffect, useState, type ReactElement } from 'react'
+import { Navigate, NavLink, Outlet, Route, Routes, useOutletContext } from 'react-router-dom'
 import { Button, Flex, Layout, Spin, Typography, theme } from 'antd'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
+import { api } from './lib/api'
 import LoginPage from './pages/LoginPage'
 import InventoryPage from './pages/InventoryPage'
 import MissionControlPage from './pages/MissionControlPage'
@@ -65,6 +66,41 @@ function CenteredSpin() {
   )
 }
 
+type OperatorContext = { isOperator: boolean | null }
+
+/** Fetches the caller's role once. `null` while loading; fails closed to
+ * `false` on any error so the internal Mission Control console stays hidden. */
+function useIsOperator(): boolean | null {
+  const [isOperator, setIsOperator] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let active = true
+    api
+      .get<{ is_operator: boolean }>('/api/me')
+      .then((me) => {
+        if (active) setIsOperator(me.is_operator)
+      })
+      .catch(() => {
+        if (active) setIsOperator(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  return isOperator
+}
+
+/** Route guard: Mission Control is operator-only. Dealers never reach the
+ * internal ops console -- non-operators are bounced to the inventory home. */
+function OperatorRoute({ children }: { children: ReactElement }) {
+  const { isOperator } = useOutletContext<OperatorContext>()
+
+  if (isOperator === null) return <CenteredSpin />
+  if (!isOperator) return <Navigate to="/" replace />
+  return children
+}
+
 /** Guards nested routes behind an authenticated Supabase session. */
 function AuthGuard() {
   const state = useSessionState()
@@ -92,10 +128,17 @@ const NAV_LINKS = [
 
 function AppFrame({ email }: { email: string }) {
   const { token } = theme.useToken()
+  const isOperator = useIsOperator()
 
   function handleLogout() {
     void supabase.auth.signOut()
   }
+
+  // Mission Control is operator-only; hide it for dealers (and while the role
+  // is still loading) so the nav never flashes a link they can't use.
+  const navLinks = NAV_LINKS.filter(
+    (link) => link.to !== '/mission-control' || isOperator === true,
+  )
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -106,7 +149,7 @@ function AppFrame({ email }: { email: string }) {
               Nextlane DMS
             </Title>
             <Flex align="center" gap={4} component="nav">
-              {NAV_LINKS.map((link) => (
+              {navLinks.map((link) => (
                 <NavLink
                   key={link.to}
                   to={link.to}
@@ -133,7 +176,7 @@ function AppFrame({ email }: { email: string }) {
         </Flex>
       </Header>
       <Content style={{ padding: 24 }}>
-        <Outlet />
+        <Outlet context={{ isOperator } satisfies OperatorContext} />
       </Content>
     </Layout>
   )
@@ -145,7 +188,14 @@ function App() {
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<AuthGuard />}>
         <Route index element={<InventoryPage />} />
-        <Route path="mission-control" element={<MissionControlPage />} />
+        <Route
+          path="mission-control"
+          element={
+            <OperatorRoute>
+              <MissionControlPage />
+            </OperatorRoute>
+          }
+        />
       </Route>
     </Routes>
   )
