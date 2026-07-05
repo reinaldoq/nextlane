@@ -1,7 +1,7 @@
 import csv
 import io
 import uuid
-from typing import Literal
+from typing import Literal, NoReturn
 
 import psycopg
 from fastapi import APIRouter, Depends, Query
@@ -80,8 +80,11 @@ def _like_pattern(q: str) -> str:
     return f"%{escaped}%"
 
 
-def _raise_duplicate_vin(e: psycopg.errors.UniqueViolation, vin: str | None):
-    """Map a vin unique violation to a 409; anything else is not ours -- re-raise (-> 500)."""
+def _raise_duplicate_vin(e: psycopg.errors.UniqueViolation, vin: str | None) -> NoReturn:
+    """Map a vin unique violation to a 409; anything else is not ours -- re-raise (-> 500).
+
+    Always raises (never returns), so callers' `row` stays bound after the
+    `except` branch."""
     if e.diag.constraint_name != "vehicles_vin_key":
         raise e
     raise api_error(

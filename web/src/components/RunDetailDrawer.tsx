@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Alert, Descriptions, Drawer, Empty, Spin, Tag, Timeline, Typography, theme } from 'antd'
 import { ApiError, api, type AgentRun, type RunDetail, type RunStepStatus } from '../lib/api'
+import { formatCostUsd } from '../lib/format'
 
 const { Text, Paragraph } = Typography
 
@@ -88,7 +89,7 @@ function RunDetailDrawer({ run, onClose }: RunDetailDrawerProps) {
             </Descriptions.Item>
             <Descriptions.Item label="Retries">{run.retries}</Descriptions.Item>
             <Descriptions.Item label="Cost">
-              {run.cost_usd !== null ? `$${run.cost_usd.toFixed(4)}` : '—'}
+              {run.cost_usd !== null ? formatCostUsd(run.cost_usd) : '—'}
             </Descriptions.Item>
             {run.pr_url !== null && (
               <Descriptions.Item label="Pull request">

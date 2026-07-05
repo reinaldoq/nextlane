@@ -53,7 +53,6 @@ VALID_OUTCOMES = frozenset(
     {
         "pr_opened",
         "gate_failed",
-        "review_rejected",
         "error",
         "completed_no_pr",
         "no_changes",
