@@ -7,6 +7,13 @@ import MarkdownLite from './MarkdownLite'
 
 const { Text } = Typography
 
+// Step details longer than either threshold collapse behind a "Show more"
+// toggle so the timeline stays scannable; both dimensions are in px.
+const DETAIL_COLLAPSE_MIN_CHARS = 240
+const DETAIL_COLLAPSE_MIN_LINES = 5
+const DETAIL_COLLAPSED_MAX_HEIGHT = 120
+const DETAIL_FADE_HEIGHT = 36
+
 interface RunDetailDrawerProps {
   /** null = closed. A run row = fetch and show that run's step timeline. */
   run: AgentRun | null
@@ -19,13 +26,21 @@ interface RunDetailDrawerProps {
 function StepDetail({ text }: { text: string }) {
   const { token } = theme.useToken()
   const [expanded, setExpanded] = useState(false)
-  const isLong = text.length > 240 || text.split('\n').length > 5
+  const isLong =
+    text.length > DETAIL_COLLAPSE_MIN_CHARS ||
+    text.split('\n').length > DETAIL_COLLAPSE_MIN_LINES
 
   if (!isLong) return <MarkdownLite text={text} />
 
   return (
     <div>
-      <div style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden', position: 'relative' }}>
+      <div
+        style={{
+          maxHeight: expanded ? undefined : DETAIL_COLLAPSED_MAX_HEIGHT,
+          overflow: 'hidden',
+          position: 'relative',
+        }}
+      >
         <MarkdownLite text={text} />
         {!expanded && (
           <div
@@ -35,7 +50,7 @@ function StepDetail({ text }: { text: string }) {
               left: 0,
               right: 0,
               bottom: 0,
-              height: 36,
+              height: DETAIL_FADE_HEIGHT,
               background: `linear-gradient(transparent, ${token.colorBgElevated})`,
             }}
           />
