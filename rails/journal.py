@@ -34,6 +34,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+# Default journal location, relative to repo_root.
+_JOURNAL_RELPATH = Path("rails") / "journal" / "runs.jsonl"
+
 #: The only valid values for `RunRecord.outcome`.
 #: "completed_no_pr" (Task 6): the loop's `open_pr=False` path -- gate went
 #: green but the caller asked to stop short of opening a PR (used for
@@ -206,7 +209,7 @@ def _default_repo_root() -> Path:
 
 
 def _default_journal_path() -> Path:
-    return _default_repo_root() / "rails" / "journal" / "runs.jsonl"
+    return _default_repo_root() / _JOURNAL_RELPATH
 
 
 def _relativize_transcript_path(path_str: str, repo_root: Path) -> str:

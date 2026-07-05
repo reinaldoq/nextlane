@@ -5,7 +5,8 @@ import type { TableColumnsType } from 'antd'
 import RunDetailDrawer from '../components/RunDetailDrawer'
 import { POLL_INTERVAL_MS, useRunList } from '../hooks/useRunList'
 import type { AgentRun } from '../lib/api'
-import { formatCostUsd } from '../lib/format'
+import { DATE_LOCALE, formatCostUsd } from '../lib/format'
+import { PAGE_MAX_WIDTH } from '../lib/layout'
 
 const { Title, Text } = Typography
 
@@ -15,7 +16,7 @@ const ENGINE_LABEL: Record<string, string> = {
   gemini: 'Gemini',
 }
 
-const startedFormatter = new Intl.DateTimeFormat('en-GB', {
+const startedFormatter = new Intl.DateTimeFormat(DATE_LOCALE, {
   dateStyle: 'medium',
   timeStyle: 'short',
 })
@@ -183,7 +184,7 @@ function MissionControlPage() {
   ]
 
   return (
-    <Flex vertical gap={24} style={{ maxWidth: 1400, margin: '0 auto' }}>
+    <Flex vertical gap={24} style={{ maxWidth: PAGE_MAX_WIDTH, margin: '0 auto' }}>
       <Flex align="flex-start" justify="space-between" wrap="wrap" gap={16}>
         <Flex vertical gap={4}>
           <Title level={3} style={{ margin: 0 }}>

@@ -2,6 +2,9 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Button, Result } from 'antd'
 import { api } from '../lib/api'
 
+const CLIENT_ERROR_MESSAGE_MAX = 4000
+const CLIENT_ERROR_STACK_MAX = 8000
+
 interface ErrorBoundaryProps {
   children: ReactNode
 }
@@ -29,8 +32,8 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
     void api
       .post('/api/events', {
         kind: 'client_error',
-        message: String(error).slice(0, 4000),
-        context: { stack: (errorInfo.componentStack ?? '').slice(0, 8000) },
+        message: String(error).slice(0, CLIENT_ERROR_MESSAGE_MAX),
+        context: { stack: (errorInfo.componentStack ?? '').slice(0, CLIENT_ERROR_STACK_MAX) },
       })
       .catch(() => {})
   }

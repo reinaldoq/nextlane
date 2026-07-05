@@ -1,3 +1,7 @@
+/** Shared date/time locale for every `Intl.DateTimeFormat` in the app, so
+ * Mission Control and Inventory render timestamps identically. */
+export const DATE_LOCALE = 'en-GB'
+
 const costFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',

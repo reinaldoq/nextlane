@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import jwt from 'jsonwebtoken'
 import type { Page } from '@playwright/test'
+import { AUTH_STORAGE_KEY } from '../src/lib/authStorage'
 import { ISSUER } from './constants'
 import { KID, PRIVATE_KEY_PATH } from './global-setup'
 
@@ -31,7 +32,7 @@ export function makeAccessToken(): string {
 }
 
 /** Seeds localStorage with a supabase-js-shaped session under the app's
- * deterministic storageKey ("nextlane-auth") before any app script runs, so
+ * deterministic storageKey (`AUTH_STORAGE_KEY`) before any app script runs, so
  * the AuthGuard sees an already-authenticated session on first paint. No
  * real auth server is ever contacted -- the session is trusted client-side
  * and only the API validates the token (against the local JWKS). */
@@ -56,6 +57,6 @@ export async function injectSession(page: Page): Promise<void> {
     ([key, value]) => {
       window.localStorage.setItem(key, value)
     },
-    ['nextlane-auth', JSON.stringify(session)],
+    [AUTH_STORAGE_KEY, JSON.stringify(session)],
   )
 }

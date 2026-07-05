@@ -41,6 +41,9 @@ from typing import Callable
 
 _Opener = Callable[[urllib.request.Request], object]
 
+_AGENT_RUNS_PATH = "/rest/v1/agent_runs"
+_RUN_STEPS_PATH = "/rest/v1/run_steps"
+
 
 class MissionControlError(RuntimeError):
     """Raised when required Supabase configuration is missing."""
@@ -78,7 +81,7 @@ def start_run(record: dict, *, opener: _Opener = urllib.request.urlopen) -> str:
     return=representation` so the inserted row (and its `id`) comes back in
     the response.
     """
-    url = f"{_base_url()}/rest/v1/agent_runs"
+    url = f"{_base_url()}{_AGENT_RUNS_PATH}"
     headers = _headers()
     headers["Content-Type"] = "application/json"
     headers["Prefer"] = "return=representation"
@@ -102,7 +105,7 @@ def add_step(
     """POST one row to `run_steps` for `run_id`. `Prefer: return=minimal` --
     the caller only needs confirmation the write landed, never the row back.
     """
-    url = f"{_base_url()}/rest/v1/run_steps"
+    url = f"{_base_url()}{_RUN_STEPS_PATH}"
     headers = _headers()
     headers["Content-Type"] = "application/json"
     headers["Prefer"] = "return=minimal"
@@ -136,7 +139,7 @@ def finish_run(
     supply a deterministic clock, mirroring `rails.agents.loop`'s own
     `now_fn` injection.
     """
-    url = f"{_base_url()}/rest/v1/agent_runs?id=eq.{run_id}"
+    url = f"{_base_url()}{_AGENT_RUNS_PATH}?id=eq.{run_id}"
     headers = _headers()
     headers["Content-Type"] = "application/json"
     headers["Prefer"] = "return=minimal"

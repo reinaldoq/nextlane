@@ -5,6 +5,9 @@ import { ApiError, api } from '../lib/api'
 
 const { TextArea } = Input
 
+// keep in sync with api/_lib/events.py's MAX_MESSAGE_CHARS
+const MESSAGE_MAX_CHARS = 4000
+
 interface ReportIssueFormValues {
   message: string
 }
@@ -66,12 +69,12 @@ function ReportIssueModal() {
             name="message"
             rules={[
               { required: true, message: 'Please describe the issue' },
-              { max: 4000, message: 'Keep it under 4000 characters' },
+              { max: MESSAGE_MAX_CHARS, message: `Keep it under ${MESSAGE_MAX_CHARS} characters` },
             ]}
           >
             <TextArea
               rows={5}
-              maxLength={4000}
+              maxLength={MESSAGE_MAX_CHARS}
               showCount
               placeholder="Describe what happened, and what you expected instead..."
             />
