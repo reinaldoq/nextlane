@@ -3,8 +3,9 @@ import type { CSSProperties } from 'react'
 import { Alert, Descriptions, Drawer, Empty, Spin, Tag, Timeline, Typography, theme } from 'antd'
 import { ApiError, api, type AgentRun, type RunDetail, type RunStepStatus } from '../lib/api'
 import { formatCostUsd } from '../lib/format'
+import MarkdownLite from './MarkdownLite'
 
-const { Text, Paragraph } = Typography
+const { Text } = Typography
 
 interface RunDetailDrawerProps {
   /** null = closed. A run row = fetch and show that run's step timeline. */
@@ -122,11 +123,7 @@ function RunDetailDrawer({ run, onClose }: RunDetailDrawerProps) {
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {new Date(step.at).toLocaleString()}
                     </Text>
-                    {step.detail !== null && (
-                      <Paragraph style={{ marginTop: 4, marginBottom: 0 }}>
-                        {step.detail}
-                      </Paragraph>
-                    )}
+                    {step.detail !== null && <MarkdownLite text={step.detail} />}
                   </>
                 ),
               }))}
