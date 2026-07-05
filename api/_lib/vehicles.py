@@ -161,12 +161,15 @@ def create_vehicle(body: VehicleIn):
 def vehicle_stats():
     # One pass over the table: FILTER aggregates yield every status count plus
     # the grand total in a single query, never one COUNT per status.
+    # total_value_cents sums price_cents across every row (COALESCE so an empty
+    # table returns 0, not NULL); it stays integer cents like the source column.
     sql = (
         "SELECT "
         "count(*) FILTER (WHERE status = 'available') AS available, "
         "count(*) FILTER (WHERE status = 'reserved') AS reserved, "
         "count(*) FILTER (WHERE status = 'sold') AS sold, "
-        "count(*) AS total "
+        "count(*) AS total, "
+        "coalesce(sum(price_cents), 0) AS total_value_cents "
         "FROM vehicles"
     )
     with pool().connection() as conn:

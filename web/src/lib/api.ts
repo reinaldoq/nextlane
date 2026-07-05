@@ -136,6 +136,8 @@ export interface VehicleStats {
   reserved: number
   sold: number
   total: number
+  /** Sum of price_cents across all vehicles (integer cents; ÷100 only for display). */
+  total_value_cents: number
 }
 
 // --- Mission Control ---------------------------------------------------
