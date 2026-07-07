@@ -45,6 +45,7 @@ def test_401_without_token_on_every_route(db_client: TestClient):
     requests = [
         ("GET", "/api/vehicles", None),
         ("GET", "/api/vehicles/stats", None),
+        ("GET", "/api/vehicles/makes", None),
         ("GET", "/api/vehicles/export.csv", None),
         ("POST", "/api/vehicles", vehicle_body()),
         ("GET", f"/api/vehicles/{vid}", None),
@@ -136,6 +137,42 @@ def test_stats_not_shadowed_by_id_route(db_client: TestClient, auth_headers: dic
     # {vehicle_id} uuid (which would 422). Route order is load-bearing.
     r = db_client.get("/api/vehicles/stats", headers=auth_headers)
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/vehicles/makes
+# ---------------------------------------------------------------------------
+
+
+def test_makes_returns_curated_list(db_client: TestClient, auth_headers: dict):
+    from api._lib.vehicles import TOP_MAKES
+
+    r = db_client.get("/api/vehicles/makes", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"makes": TOP_MAKES}
+    # Top-30 selling companies -- curated, deduped, and non-empty.
+    assert len(body["makes"]) == 30
+    assert len(set(body["makes"])) == 30
+    assert all(isinstance(m, str) and m for m in body["makes"])
+    assert "Toyota" in body["makes"]
+
+
+def test_makes_not_shadowed_by_id_route(db_client: TestClient, auth_headers: dict):
+    # /vehicles/makes must resolve to the makes endpoint, not be parsed as a
+    # {vehicle_id} uuid (which would 422). Route order is load-bearing.
+    r = db_client.get("/api/vehicles/makes", headers=auth_headers)
+    assert r.status_code == 200
+
+
+def test_makes_are_only_suggestions_not_a_write_whitelist(
+    db_client: TestClient, auth_headers: dict
+):
+    # The dropdown is a UX affordance: creating a vehicle with a make outside the
+    # curated list must still succeed (the column stays free text).
+    r = db_client.post("/api/vehicles", json=vehicle_body(make="Koenigsegg"), headers=auth_headers)
+    assert r.status_code == 201, r.text
+    assert r.json()["make"] == "Koenigsegg"
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,44 @@ MAX_VEHICLE_YEAR = 2100
 # diag.constraint_name to distinguish "duplicate vin" from any other conflict.
 VIN_UNIQUE_CONSTRAINT = "vehicles_vin_key"
 
+# Top-30 highest-volume vehicle makes, served by GET /vehicles/makes and offered
+# as dropdown suggestions in the create/edit form (the web fetches this list --
+# it is NOT duplicated client-side). This is purely a UX affordance: unlike
+# SORT_COLUMNS, `make` is deliberately NOT validated against this list on write,
+# so historical/niche makes stay editable and the column remains free text.
+TOP_MAKES = [
+    "Toyota",
+    "Volkswagen",
+    "Ford",
+    "Honda",
+    "Nissan",
+    "Chevrolet",
+    "Hyundai",
+    "Kia",
+    "Mercedes-Benz",
+    "BMW",
+    "Audi",
+    "Renault",
+    "Peugeot",
+    "Volvo",
+    "Mazda",
+    "Subaru",
+    "Jeep",
+    "Tesla",
+    "Lexus",
+    "Dodge",
+    "Ram",
+    "GMC",
+    "Fiat",
+    "Citroën",
+    "Škoda",
+    "Mitsubishi",
+    "Suzuki",
+    "Land Rover",
+    "Porsche",
+    "Chrysler",
+]
+
 
 class VehicleIn(BaseModel):
     vin: str = Field(min_length=VIN_MIN_LEN, max_length=VIN_MAX_LEN)
@@ -197,6 +235,15 @@ def vehicle_stats():
     )
     with pool().connection() as conn:
         return conn.execute(sql).fetchone()
+
+
+# Declared before GET /vehicles/{vehicle_id} so the literal "makes" segment wins
+# the match instead of being parsed as a (malformed) uuid path param.
+@router.get("/vehicles/makes")
+def vehicle_makes():
+    # A static, curated suggestion list -- no DB round-trip. See TOP_MAKES for
+    # why this is a UX affordance and not a write-time whitelist.
+    return {"makes": TOP_MAKES}
 
 
 # CSV column order is a stable external contract; price_eur is a display-only

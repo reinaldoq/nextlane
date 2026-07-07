@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { App, Button, Drawer, Flex, Form, Input, InputNumber, Select } from 'antd'
-import { ApiError, api, type Vehicle } from '../lib/api'
+import { ApiError, api, type MakesResponse, type Vehicle } from '../lib/api'
 
 // keep in sync with api/_lib/vehicles.py's VIN_MIN_LEN / VIN_MAX_LEN
 const VIN_MIN_LEN = 5
@@ -58,7 +58,32 @@ function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawe
   const { message } = App.useApp()
   const [form] = Form.useForm<VehicleFormValues>()
   const [submitting, setSubmitting] = useState(false)
+  const [makes, setMakes] = useState<string[]>([])
   const isEdit = vehicle !== null
+
+  // Curated top-30 makes for the dropdown, fetched once. If the request fails
+  // the field still works: it falls back to just the row's current make (edit)
+  // or an empty list (create) -- makes are suggestions, not a hard constraint.
+  useEffect(() => {
+    const controller = new AbortController()
+    api
+      .get<MakesResponse>('/api/vehicles/makes', undefined, controller.signal)
+      .then((res) => setMakes(res.makes))
+      .catch(() => {
+        // Non-fatal: leave the suggestion list empty (aborts land here too).
+      })
+    return () => controller.abort()
+  }, [])
+
+  // Include the row's current make even if it's outside the curated list, so
+  // editing a historical/niche make never silently drops or blocks it.
+  const makeOptions = useMemo(() => {
+    const values = [...makes]
+    if (vehicle && vehicle.make && !values.includes(vehicle.make)) {
+      values.unshift(vehicle.make)
+    }
+    return values.map((make) => ({ label: make, value: make }))
+  }, [makes, vehicle])
 
   useEffect(() => {
     if (!open) return
@@ -160,7 +185,12 @@ function VehicleFormDrawer({ open, vehicle, onClose, refresh }: VehicleFormDrawe
           name="make"
           rules={[{ required: true, message: 'Make is required' }]}
         >
-          <Input placeholder="e.g. Honda" />
+          <Select
+            options={makeOptions}
+            placeholder="Select a make"
+            showSearch
+            optionFilterProp="label"
+          />
         </Form.Item>
 
         <Form.Item
