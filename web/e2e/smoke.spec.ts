@@ -29,7 +29,10 @@ test('inventory golden path: create, search, transition, delete', async ({ page 
     await expect(dialog).toBeVisible()
 
     await dialog.getByLabel('VIN').fill(vin)
-    await dialog.getByLabel('Make').fill('Playwright')
+    // Make is a dropdown of the curated top-30 makes (GET /api/vehicles/makes);
+    // options render in a portal outside the dialog.
+    await dialog.getByLabel('Make').click()
+    await page.getByRole('option', { name: 'Toyota', exact: true }).click()
     await dialog.getByLabel('Model').fill('Smoke')
     await dialog.getByLabel('Year').fill('2024')
     await dialog.getByLabel('Price').fill('12345.67')
@@ -54,7 +57,7 @@ test('inventory golden path: create, search, transition, delete', async ({ page 
     await search.press('Enter')
 
     await expect(page.getByRole('row', { name: new RegExp(vin) })).toHaveCount(1)
-    await expect(row.getByText('Playwright')).toBeVisible()
+    await expect(row.getByText('Toyota')).toBeVisible()
     await expect(row.getByText('Smoke')).toBeVisible()
     await expect(row.getByText(/12\.345,67\s*€/)).toBeVisible()
     await expect(row.getByText('Available', { exact: true })).toBeVisible()

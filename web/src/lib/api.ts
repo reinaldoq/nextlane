@@ -130,6 +130,13 @@ export interface ListResponse<T> {
   total: number
 }
 
+/** Curated top-30 vehicle makes from GET /api/vehicles/makes, used to populate
+ * the make dropdown in the create/edit form. Suggestions only -- the server does
+ * not restrict `make` to this list. */
+export interface MakesResponse {
+  makes: string[]
+}
+
 /** Vehicle counts by status plus the grand total, from GET /api/vehicles/stats. */
 export interface VehicleStats {
   available: number
