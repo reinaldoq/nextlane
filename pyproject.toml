@@ -20,7 +20,7 @@ rails = "rails.cli:app"
 # they're available where needed without bloating the api deployment.
 dev = [
   "uvicorn>=0.30",
-  "httpx>=0.27",
+  "httpx>=0.28.1",
   "pytest>=8",
   "ruff>=0.6",
   "pip-audit>=2.7",
