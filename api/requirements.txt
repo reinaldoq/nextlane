@@ -6,7 +6,7 @@ annotated-types==0.7.0
     # via pydantic
 anyio==4.14.1
     # via starlette
-cffi==2.0.0 ; platform_python_implementation != 'PyPy'
+cffi==2.1.0 ; platform_python_implementation != 'PyPy'
     # via cryptography
 cryptography==49.0.0
     # via pyjwt
