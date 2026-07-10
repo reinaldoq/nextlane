@@ -24,7 +24,7 @@ dev = [
   "pytest>=8",
   "ruff>=0.6",
   "pip-audit>=2.7",
-  "typer>=0.15",
+  "typer>=0.26.8",
   "rich>=13",
 ]
 
